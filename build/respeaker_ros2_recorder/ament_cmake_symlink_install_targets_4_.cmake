@@ -1,0 +1,1 @@
+ament_cmake_symlink_install_targets("TARGET_FILES" "/home/kemove/yyz/audio-nav/ws_col/build/respeaker_ros2_recorder/rosidl_generator_py/respeaker_ros2_recorder/respeaker_ros2_recorder_s__rosidl_typesupport_c.cpython-38-x86_64-linux-gnu.so" "TARGETS" "respeaker_ros2_recorder__rosidl_typesupport_c__pyext" "DESTINATION" "lib/python3.8/site-packages/respeaker_ros2_recorder")

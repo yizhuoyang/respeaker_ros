@@ -1,0 +1,1 @@
+/home/kemove/yyz/audio-nav/ws_col/build/respeaker_ros2_recorder/rosidl_cmake/rosidl_cmake-extras.cmake

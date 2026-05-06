@@ -1,0 +1,1 @@
+/home/kemove/yyz/audio-nav/ws_col/build/respeaker_ros2_recorder/rosidl_typesupport_introspection_c/respeaker_ros2_recorder/msg/rosidl_typesupport_introspection_c__visibility_control.h

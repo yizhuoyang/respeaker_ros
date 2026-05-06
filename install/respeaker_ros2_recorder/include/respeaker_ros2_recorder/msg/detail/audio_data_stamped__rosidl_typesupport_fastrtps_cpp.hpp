@@ -1,0 +1,1 @@
+/home/kemove/yyz/audio-nav/ws_col/build/respeaker_ros2_recorder/rosidl_typesupport_fastrtps_cpp/respeaker_ros2_recorder/msg/detail/audio_data_stamped__rosidl_typesupport_fastrtps_cpp.hpp

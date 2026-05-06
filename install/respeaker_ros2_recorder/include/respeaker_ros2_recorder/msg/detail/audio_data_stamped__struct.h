@@ -1,0 +1,1 @@
+/home/kemove/yyz/audio-nav/ws_col/build/respeaker_ros2_recorder/rosidl_generator_c/respeaker_ros2_recorder/msg/detail/audio_data_stamped__struct.h

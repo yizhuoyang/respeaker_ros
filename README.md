@@ -1,0 +1,238 @@
+# ReSpeaker ROS1 Audio Recorder
+
+这个包用于在 ROS1 中采集 ReSpeaker 多通道音频，发布音频 topic，录制 rosbag，并把 bag 中的音频导出为 WAV。
+
+包名：
+
+```text
+respeaker_ros_recorder
+```
+
+默认 topic：
+
+```text
+/respeaker/audio_raw
+```
+
+消息类型：
+
+```text
+respeaker_ros_recorder/AudioDataStamped
+```
+
+## 1. 环境准备
+
+建议新开一个终端，只 source ROS1 Noetic，不要和 ROS2 Foxy/Humble 混用：
+
+```bash
+cd /home/kemove/yyz/audio-nav/ws_col
+
+unset ROS_DISTRO ROS_VERSION ROS_PYTHON_VERSION ROS_PACKAGE_PATH
+unset AMENT_PREFIX_PATH CMAKE_PREFIX_PATH COLCON_PREFIX_PATH PYTHONPATH
+
+source /opt/ros/noetic/setup.bash
+```
+
+安装依赖：
+
+```bash
+sudo apt update
+sudo apt install python3-pyaudio python3-numpy python3-soundfile ros-noetic-rosbag
+```
+
+如果你使用 conda，建议 ROS1 采集时先退出 conda：
+
+```bash
+conda deactivate
+```
+
+## 2. 编译
+
+从工作区根目录编译：
+
+```bash
+cd /home/kemove/yyz/audio-nav/ws_col
+source /opt/ros/noetic/setup.bash
+catkin_make
+source devel/setup.bash
+```
+
+检查包是否能找到：
+
+```bash
+rospack find respeaker_ros_recorder
+```
+
+## 3. 查看音频设备
+
+先确认 Linux 能看到声卡：
+
+```bash
+arecord -l
+```
+
+再查看 PyAudio 输入设备编号：
+
+```bash
+rosrun respeaker_ros_recorder list_audio_devices.py
+```
+
+示例：
+
+```text
+Index 2: ReSpeaker 6 Mic Array | maxInputChannels=6 | defaultSampleRate=16000.0
+```
+
+后续启动时使用：
+
+```text
+device_index:=2
+```
+
+`device_index:=-1` 表示使用系统默认输入设备。
+
+## 4. 启动采集
+
+只发布音频 topic，不录 bag：
+
+```bash
+roslaunch respeaker_ros_recorder respeaker_collect.launch device_index:=2
+```
+
+检查 topic：
+
+```bash
+rostopic list
+rostopic info /respeaker/audio_raw
+rostopic echo /respeaker/audio_raw -n 1
+```
+
+## 5. 采集并录制 Bag
+
+启动采集并同时录制 rosbag：
+
+```bash
+roslaunch respeaker_ros_recorder respeaker_collect.launch \
+  device_index:=2 \
+  record_bag:=true \
+  bag_path:=respeaker_audio
+```
+
+这会生成：
+
+```text
+respeaker_audio.bag
+```
+
+停止录制：
+
+```text
+Ctrl+C
+```
+
+查看 bag：
+
+```bash
+rosbag info respeaker_audio.bag
+```
+
+## 6. 单个 Bag 导出 WAV
+
+导出全部通道：
+
+```bash
+rosrun respeaker_ros_recorder export_audio_from_bag.py \
+  --bag respeaker_audio.bag \
+  --topic /respeaker/audio_raw \
+  --out respeaker_audio.wav
+```
+
+只导出指定通道，例如通道 0 和 1：
+
+```bash
+rosrun respeaker_ros_recorder export_audio_from_bag.py \
+  --bag respeaker_audio.bag \
+  --topic /respeaker/audio_raw \
+  --out respeaker_ch0_ch1.wav \
+  --channels 0,1
+```
+
+通道编号从 `0` 开始。6 通道设备的有效编号是：
+
+```text
+0,1,2,3,4,5
+```
+
+## 7. 常用参数
+
+```text
+sample_rate  默认 16000
+channels     默认 6
+chunk_size   默认 1600，约 0.1 秒音频
+device_index PyAudio 输入设备编号，-1 表示默认设备
+frame_id     默认 respeaker
+topic_name   默认 /respeaker/audio_raw
+record_bag   true/false，是否同时录 bag
+bag_path     bag 输出文件名前缀
+```
+
+## 8. 常见问题
+
+包找不到：
+
+```bash
+source /opt/ros/noetic/setup.bash
+source /home/kemove/yyz/audio-nav/ws_col/devel/setup.bash
+rospack find respeaker_ros_recorder
+```
+
+混入 ROS2：
+
+```bash
+echo $AMENT_PREFIX_PATH
+echo $COLCON_PREFIX_PATH
+```
+
+如果看到 Foxy/Humble 的路径，新开终端，重新按第 1 节配置。
+
+设备打不开：
+
+```bash
+arecord -l
+rosrun respeaker_ros_recorder list_audio_devices.py
+```
+
+确认 `device_index`、`channels`、`sample_rate` 和实际设备一致。
+
+导出 WAV 失败：
+
+```bash
+python3 -c "import numpy, soundfile, rosbag; print('ok')"
+```
+
+如果缺包，安装：
+
+```bash
+sudo apt install python3-numpy python3-soundfile
+```
+
+## 9. 最短完整流程
+
+```bash
+cd /home/kemove/yyz/audio-nav/ws_col
+source /opt/ros/noetic/setup.bash
+catkin_make
+source devel/setup.bash
+
+rosrun respeaker_ros_recorder list_audio_devices.py
+
+roslaunch respeaker_ros_recorder respeaker_collect.launch \
+  device_index:=2 \
+  record_bag:=true \
+  bag_path:=respeaker_audio
+
+rosrun respeaker_ros_recorder export_audio_from_bag.py \
+  --bag respeaker_audio.bag \
+  --topic /respeaker/audio_raw \
+  --out respeaker_audio.wav
+```
