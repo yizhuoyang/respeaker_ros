@@ -1,0 +1,34 @@
+<launch>
+  <!-- Audio capture parameters -->
+  <arg name="sample_rate" default="16000" />
+  <arg name="channels" default="6" />
+  <arg name="chunk_size" default="1600" />
+  <arg name="device_index" default="-1" />
+  <arg name="frame_id" default="respeaker" />
+  <arg name="topic_name" default="/respeaker/audio_raw" />
+
+  <!-- Optional rosbag recording -->
+  <arg name="record_bag" default="false" />
+  <arg name="bag_path" default="respeaker_audio" />
+
+  <node
+    pkg="respeaker_ros_recorder"
+    type="respeaker_multichannel_node.py"
+    name="respeaker_multichannel_node"
+    output="screen">
+    <param name="sample_rate" value="$(arg sample_rate)" />
+    <param name="channels" value="$(arg channels)" />
+    <param name="chunk_size" value="$(arg chunk_size)" />
+    <param name="device_index" value="$(arg device_index)" />
+    <param name="frame_id" value="$(arg frame_id)" />
+    <param name="topic_name" value="$(arg topic_name)" />
+  </node>
+
+  <node
+    if="$(arg record_bag)"
+    pkg="rosbag"
+    type="record"
+    name="respeaker_audio_bag"
+    output="screen"
+    args="-O $(arg bag_path) $(arg topic_name)" />
+</launch>
