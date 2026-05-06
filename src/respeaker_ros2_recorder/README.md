@@ -30,6 +30,20 @@ ros2 run respeaker_ros2_recorder respeaker_multichannel_node.py --ros-args \
   -p topic_name:=/respeaker/audio_raw
 ```
 
+Launch the recorder:
+
+```bash
+ros2 launch respeaker_ros2_recorder respeaker_collect.launch.py
+```
+
+Launch and record a ROS 2 bag:
+
+```bash
+ros2 launch respeaker_ros2_recorder respeaker_collect.launch.py \
+  record_bag:=true \
+  bag_path:=respeaker_audio
+```
+
 List audio input devices:
 
 ```bash

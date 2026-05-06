@@ -1,7 +1,10 @@
 build/
-devel/
+install/
+log/
 *.log
 .vscode/
 .DS_Store
 *.bag
 *.wav
+bags/
+wav_exports/
