@@ -1,5 +1,5 @@
-build/
-devel/
+# build/
+# devel/
 *.log
 .vscode/
 .DS_Store

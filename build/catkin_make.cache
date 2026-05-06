@@ -1,0 +1,2 @@
+respeaker_ros_recorder
+-DCATKIN_DEVEL_PREFIX=/home/kemove/yyz/audio-nav/ws_col/devel -DCMAKE_INSTALL_PREFIX=/home/kemove/yyz/audio-nav/ws_col/install -G Unix Makefiles
