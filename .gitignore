@@ -3,3 +3,5 @@ devel/
 *.log
 .vscode/
 .DS_Store
+*.bag
+*.wav
