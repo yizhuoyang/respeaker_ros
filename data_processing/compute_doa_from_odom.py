@@ -52,6 +52,16 @@ def main():
         help="Per-sample npy directory name under each dataset. Default: <output-prefix>_<odom>.",
     )
     parser.add_argument(
+        "--distance-output-prefix",
+        default="distance",
+        help="Output prefix for distance csv/npz files under each dataset.",
+    )
+    parser.add_argument(
+        "--distance-sample-output-dir",
+        default=None,
+        help="Per-sample distance npy directory name under each dataset. Default: <distance-output-prefix>_<odom>.",
+    )
+    parser.add_argument(
         "--recursive",
         action="store_true",
         help="When --dataset is a parent directory, search datasets recursively.",
@@ -83,6 +93,8 @@ def main():
             target_arg=args.target,
             output_prefix=args.output_prefix,
             sample_output_dir=args.sample_output_dir,
+            distance_output_prefix=args.distance_output_prefix,
+            distance_sample_output_dir=args.distance_sample_output_dir,
             input_frame=args.input_frame,
             lidar_pitch_deg=args.lidar_pitch_deg,
             mic_translation_arg=args.mic_translation,
@@ -95,6 +107,8 @@ def compute_doa(
     target_arg="final",
     output_prefix="doa",
     sample_output_dir=None,
+    distance_output_prefix="distance",
+    distance_sample_output_dir=None,
     input_frame="mic",
     lidar_pitch_deg=-23.0,
     mic_translation_arg="0.2,0.0,0.0",
@@ -143,9 +157,11 @@ def compute_doa(
         mic_rotations,
     ):
         heading_world = mic_rotation @ np.array([1.0, 0.0, 0.0], dtype=np.float64)
+        target_vector_3d = target - mic_position
         target_vector_xy = target[:2] - mic_position[:2]
         heading_xy = heading_world[:2]
         distance_xy = float(np.linalg.norm(target_vector_xy))
+        distance_3d = float(np.linalg.norm(target_vector_3d))
         robot_heading_world = horizontal_angle_deg(heading_xy)
         target_azimuth_world = horizontal_angle_deg(target_vector_xy)
         signed_yaw = signed_horizontal_angle_deg(heading_xy, target_vector_xy)
@@ -164,6 +180,7 @@ def compute_doa(
             "heading_world_x": float(heading_world[0]),
             "heading_world_y": float(heading_world[1]),
             "distance_xy": distance_xy,
+            "distance_3d": distance_3d,
             "robot_heading_world_deg": robot_heading_world,
             "target_azimuth_world_deg": target_azimuth_world,
             "heading_target_yaw_signed_deg": signed_yaw,
@@ -173,13 +190,22 @@ def compute_doa(
     csv_path = dataset_dir / f"{output_prefix}_{odom_name}.csv"
     npz_path = dataset_dir / f"{output_prefix}_{odom_name}.npz"
     sample_dir = dataset_dir / (sample_output_dir or f"{output_prefix}_{odom_name}")
+    distance_csv_path = dataset_dir / f"{distance_output_prefix}_{odom_name}.csv"
+    distance_npz_path = dataset_dir / f"{distance_output_prefix}_{odom_name}.npz"
+    distance_sample_dir = dataset_dir / (distance_sample_output_dir or f"{distance_output_prefix}_{odom_name}")
     write_csv(csv_path, rows)
-    write_npz(npz_path, rows)
-    write_sample_npy(sample_dir, rows)
+    write_npz(npz_path, rows, doa_fields())
+    write_sample_npy(sample_dir, rows, doa_fields())
+    write_csv(distance_csv_path, distance_rows(rows))
+    write_npz(distance_npz_path, rows, distance_fields())
+    write_sample_npy(distance_sample_dir, rows, distance_fields())
 
     print(f"Wrote {csv_path}")
     print(f"Wrote {npz_path}")
     print(f"Wrote per-sample npy files under {sample_dir}")
+    print(f"Wrote {distance_csv_path}")
+    print(f"Wrote {distance_npz_path}")
+    print(f"Wrote per-sample distance npy files under {distance_sample_dir}")
     print(f"Target position: {target.tolist()}")
     if input_frame == "lidar":
         print(f"Applied LiDAR->mic transform: lidar_pitch_deg={lidar_pitch_deg}, mic_translation={mic_translation_lidar.tolist()}")
@@ -304,13 +330,12 @@ def write_csv(csv_path, rows):
         writer.writerows(rows)
 
 
-def write_npz(npz_path, rows):
+def write_npz(npz_path, rows, fields):
     if not rows:
         return
 
     sample_ids = np.array([row["sample_id"] for row in rows])
     timestamps_ns = np.array([row["timestamp_ns"] for row in rows], dtype=np.int64)
-    fields = doa_fields()
     data = rows_to_array(rows, fields)
 
     np.savez(
@@ -322,12 +347,11 @@ def write_npz(npz_path, rows):
     )
 
 
-def write_sample_npy(sample_dir, rows):
+def write_sample_npy(sample_dir, rows, fields):
     if not rows:
         return
 
     sample_dir.mkdir(parents=True, exist_ok=True)
-    fields = doa_fields()
     for row in rows:
         sample_id = str(row["sample_id"])
         np.save(sample_dir / f"{sample_id}.npy", rows_to_array([row], fields)[0])
@@ -346,11 +370,31 @@ def doa_fields():
         "heading_world_x",
         "heading_world_y",
         "distance_xy",
+        "distance_3d",
         "robot_heading_world_deg",
         "target_azimuth_world_deg",
         "heading_target_yaw_signed_deg",
         "heading_target_yaw_abs_deg",
     ])
+
+
+def distance_fields():
+    return np.array([
+        "distance_xy",
+        "distance_3d",
+    ])
+
+
+def distance_rows(rows):
+    return [
+        {
+            "sample_id": row["sample_id"],
+            "timestamp_ns": row["timestamp_ns"],
+            "distance_xy": row["distance_xy"],
+            "distance_3d": row["distance_3d"],
+        }
+        for row in rows
+    ]
 
 
 def rows_to_array(rows, fields):

@@ -167,9 +167,24 @@ doa_lio_robo_odom/
 ├── 000000.npy
 ├── 000001.npy
 └── ...
+distance_lio_robo_odom.csv
+distance_lio_robo_odom.npz
+distance_lio_robo_odom/
+├── 000000.npy
+├── 000001.npy
+└── ...
 ```
 
 其中 `doa_lio_robo_odom/` 是逐样本保存的 DOA 特征目录，文件编号和同步数据中的 `audio/ color/ depth/ lio_odom/` 等目录保持一致。每个 `.npy` 内部是一维数组，字段顺序可以从同目录下的 `doa_lio_robo_odom.npz` 里的 `fields` 读取。
+
+`distance_lio_robo_odom/` 是逐样本保存的距离目录。每个 `.npy` 内部包含：
+
+```text
+distance_xy
+distance_3d
+```
+
+其中 `distance_xy` 是只看水平 `x-y` 平面的距离，`distance_3d` 是包含 `z` 的三维距离。训练水平 DOA 或平面导航任务时，通常优先使用 `distance_xy`。
 
 如果想自定义逐样本输出目录名：
 
@@ -205,6 +220,7 @@ python data_processing/compute_doa_from_odom.py \
 - 目标相对机器人在 world 坐标系下的水平向量 `target_vector_world_x, target_vector_world_y`
 - 机器人头方向，也就是 body `+x` 轴投影到 world `x-y` 平面后的方向 `heading_world_x, heading_world_y`
 - 到 target 的水平距离 `distance_xy`
+- 到 target 的三维距离 `distance_3d`
 - 机器人头方向在 world 水平面的角度 `robot_heading_world_deg`
 - 目标方向在 world 水平面的角度 `target_azimuth_world_deg`
 - 机器人头方向到目标方向的水平有符号夹角 `heading_target_yaw_signed_deg`
