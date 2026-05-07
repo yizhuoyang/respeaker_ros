@@ -172,6 +172,30 @@ ros2 run respeaker_ros2_recorder batch_export_audio_from_bags.py \
   --topic /respeaker/audio_raw
 ```
 
+导出完成后会自动生成：
+
+```text
+wav_exports/audio_timestamps.csv
+```
+
+里面包含每个 WAV 对应的 `first_stamp_ns` 和 `last_stamp_ns`，后续同步时可以直接用 `first_stamp_ns` 作为 `--audio-start-ns`。
+
+如果想把首帧音频时间戳也写进 WAV 文件名：
+
+```bash
+ros2 run respeaker_ros2_recorder batch_export_audio_from_bags.py \
+  --input-dir bags \
+  --output-dir wav_exports \
+  --topic /respeaker/audio_raw \
+  --timestamp-in-name
+```
+
+输出文件名类似：
+
+```text
+bag_001_1778038000123456789.wav
+```
+
 批量导出指定通道：
 
 ```bash

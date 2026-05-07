@@ -39,8 +39,8 @@ def export_audio(bag_path, topic, output_wav, selected_channels=None):
     all_audio = []
     sample_rate = None
     channels = None
-    first_stamp = None
-    last_stamp = None
+    first_stamp_ns = None
+    last_stamp_ns = None
 
     while reader.has_next():
         topic_name, serialized_data, _ = reader.read_next()
@@ -51,9 +51,9 @@ def export_audio(bag_path, topic, output_wav, selected_channels=None):
         if sample_rate is None:
             sample_rate = int(msg.sample_rate)
             channels = int(msg.channels)
-            first_stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+            first_stamp_ns = stamp_to_ns(msg.header.stamp)
 
-        last_stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        last_stamp_ns = stamp_to_ns(msg.header.stamp)
 
         audio = np.array(msg.data, dtype=np.int16)
         audio = audio.reshape(-1, channels)
@@ -76,8 +76,20 @@ def export_audio(bag_path, topic, output_wav, selected_channels=None):
     print(f"Sample rate: {sample_rate}")
     print(f"Original channels: {channels}")
     print(f"Saved shape: {audio_all.shape}")
-    print(f"First stamp: {first_stamp}")
-    print(f"Last stamp: {last_stamp}")
+    print(f"First stamp ns: {first_stamp_ns}")
+    print(f"Last stamp ns: {last_stamp_ns}")
+
+    return {
+        "bag": str(bag_path),
+        "topic": topic,
+        "output_wav": str(output_wav),
+        "sample_rate": sample_rate,
+        "channels": channels,
+        "frames": int(audio_all.shape[0]),
+        "saved_shape": tuple(audio_all.shape),
+        "first_stamp_ns": first_stamp_ns,
+        "last_stamp_ns": last_stamp_ns,
+    }
 
 
 def export_audio_from_sqlite_bag(bag_path, topic, output_wav, selected_channels=None):
@@ -102,17 +114,17 @@ def export_audio_from_sqlite_bag(bag_path, topic, output_wav, selected_channels=
         all_audio = []
         sample_rate = None
         channels = None
-        first_stamp = None
-        last_stamp = None
+        first_stamp_ns = None
+        last_stamp_ns = None
 
         for _, serialized_data in rows:
             msg = deserialize_message(serialized_data, msg_type)
             if sample_rate is None:
                 sample_rate = int(msg.sample_rate)
                 channels = int(msg.channels)
-                first_stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+                first_stamp_ns = stamp_to_ns(msg.header.stamp)
 
-            last_stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+            last_stamp_ns = stamp_to_ns(msg.header.stamp)
 
             audio = np.array(msg.data, dtype=np.int16)
             audio = audio.reshape(-1, channels)
@@ -136,8 +148,21 @@ def export_audio_from_sqlite_bag(bag_path, topic, output_wav, selected_channels=
     print(f"Sample rate: {sample_rate}")
     print(f"Original channels: {channels}")
     print(f"Saved shape: {audio_all.shape}")
-    print(f"First stamp: {first_stamp}")
-    print(f"Last stamp: {last_stamp}")
+    print(f"First stamp ns: {first_stamp_ns}")
+    print(f"Last stamp ns: {last_stamp_ns}")
+
+    return {
+        "bag": str(bag_path),
+        "sqlite_database": str(db3_path),
+        "topic": topic,
+        "output_wav": str(output_wav),
+        "sample_rate": sample_rate,
+        "channels": channels,
+        "frames": int(audio_all.shape[0]),
+        "saved_shape": tuple(audio_all.shape),
+        "first_stamp_ns": first_stamp_ns,
+        "last_stamp_ns": last_stamp_ns,
+    }
 
 
 def find_sqlite_bag_file(bag_path):
@@ -160,6 +185,10 @@ def parse_channel_list(channel_str):
         return None
 
     return [int(x) for x in channel_str.split(",")]
+
+
+def stamp_to_ns(stamp):
+    return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
 
 
 def main():
