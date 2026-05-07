@@ -8,6 +8,9 @@
 extract_ros2_bag_data.py
 sync_audio_with_extracted_data.py
 sync_from_bag_and_audio.py
+inspect_processed_data.ipynb
+truncate_synced_dataset.py
+compute_doa_from_odom.py
 ```
 
 默认提取这些 topic：
@@ -38,6 +41,176 @@ python -m pip install opencv-python
 ```
 
 没有 OpenCV 时，图像会保存为 `.npy`。
+
+图像 topic 同时支持两种消息：
+
+```text
+sensor_msgs/msg/Image
+sensor_msgs/msg/CompressedImage
+```
+
+如果你指定的是 raw topic，例如：
+
+```text
+/camera/color/image_raw
+```
+
+但 bag 里实际只有：
+
+```text
+/camera/color/image_raw/compressed
+```
+
+脚本会自动尝试读取 `/compressed`。深度图也会自动尝试 `/compressedDepth`。
+
+compressed 图像会优先解码保存为 `.png`；如果缺少 OpenCV 或无法解码，会保存原始压缩数据，例如 `.jpg`、`.png` 或 `.bin`。
+
+## 检查处理后的数据
+
+处理完成后，可以打开 notebook 检查 odom 轨迹：
+
+```text
+data_processing/inspect_processed_data.ipynb
+```
+
+主要功能：
+
+- 读取 `lio_odom.npz` / `lio_robo_odom.npz`
+- 画机器人 XY 平面轨迹
+- 画 XYZ 三维轨迹
+- 查看 `x,y,z` 随样本编号变化
+- 检查同步误差 `diff_ns`
+- 检查 audio / image / odom / metadata 文件数量
+
+打开后只需要修改：
+
+```python
+DATASET_DIR = Path("synced_dataset/bag_001")
+```
+
+## 裁剪同步后的数据集
+
+如果同步后的数据太长，想只保留某个 index 之前的数据，可以使用：
+
+```bash
+python data_processing/truncate_synced_dataset.py \
+  --dataset synced_dataset/bag_001 \
+  --keep-through 120
+```
+
+这会保留：
+
+```text
+000000 到 000120
+```
+
+并删除之后的样本文件。
+
+建议先 dry-run 看看会删什么：
+
+```bash
+python data_processing/truncate_synced_dataset.py \
+  --dataset synced_dataset/bag_001 \
+  --keep-through 120 \
+  --dry-run
+```
+
+脚本会同步更新：
+
+- `dataset_manifest.json`
+- `lio_odom.npz`
+- `lio_robo_odom.npz`
+- `audio/ color/ depth/ lio_odom/ lio_robo_odom/ metadata/` 下对应 index 之后的文件
+
+## 由 Odom 计算 DOA
+
+如果把轨迹最终位置当作发声物体位置，可以计算每个时刻机器人头方向和目标方向在水平面上的夹角：
+
+```bash
+python data_processing/compute_doa_from_odom.py \
+  --dataset synced_dataset/bag_001 \
+  --odom lio_robo_odom
+```
+
+默认 target 是 odom 的最终位置。也可以手动指定发声物体位置：
+
+```bash
+python data_processing/compute_doa_from_odom.py \
+  --dataset synced_dataset/bag_001 \
+  --odom lio_robo_odom \
+  --target 1.2,3.4,0.5
+```
+
+如果使用的是 `lio_odom.npz`，并且 odom 位姿代表的是 LiDAR 坐标系，但你希望按麦克风/机器人头的位置和朝向计算 DOA，可以先应用 LiDAR 到麦克风的外参：
+
+```bash
+python data_processing/compute_doa_from_odom.py \
+  --dataset synced_dataset/bag_001 \
+  --odom lio_odom \
+  --input-frame lidar \
+  --lidar-pitch-deg -23 \
+  --mic-translation 0.2,0.0,0.0
+```
+
+这里的约定是：
+
+- `--lidar-pitch-deg -23` 表示 LiDAR 相对麦克风/机器人头坐标系向下倾斜 23 度
+- `--mic-translation 0.2,0.0,0.0` 表示麦克风原点相对 LiDAR 原点的平移，单位是米，坐标表达在 LiDAR 坐标系下
+- 如果实际安装是麦克风在 LiDAR 后方、左侧或上方，需要按真实方向修改这个三维平移，例如 `-0.2,0,0` 或 `0,0,0.2`
+
+输出：
+
+```text
+doa_lio_robo_odom.csv
+doa_lio_robo_odom.npz
+doa_lio_robo_odom/
+├── 000000.npy
+├── 000001.npy
+└── ...
+```
+
+其中 `doa_lio_robo_odom/` 是逐样本保存的 DOA 特征目录，文件编号和同步数据中的 `audio/ color/ depth/ lio_odom/` 等目录保持一致。每个 `.npy` 内部是一维数组，字段顺序可以从同目录下的 `doa_lio_robo_odom.npz` 里的 `fields` 读取。
+
+如果想自定义逐样本输出目录名：
+
+```bash
+python data_processing/compute_doa_from_odom.py \
+  --dataset synced_dataset/bag_001 \
+  --odom lio_odom \
+  --sample-output-dir doa
+```
+
+如果 `synced_dataset/` 下有多个已经同步好的数据集，可以批量处理：
+
+```bash
+python data_processing/compute_doa_from_odom.py \
+  --dataset synced_dataset \
+  --odom lio_odom \
+  --input-frame lidar \
+  --lidar-pitch-deg -23 \
+  --mic-translation -0.2,0.0,0.0
+```
+
+如果数据集在更深层目录，增加：
+
+```bash
+--recursive
+```
+
+其中包含：
+
+- robot 当前水平位置 `robot_x, robot_y`
+- 原始 odom 水平位置 `source_odom_x, source_odom_y`
+- target 水平位置 `target_x, target_y`
+- 目标相对机器人在 world 坐标系下的水平向量 `target_vector_world_x, target_vector_world_y`
+- 机器人头方向，也就是 body `+x` 轴投影到 world `x-y` 平面后的方向 `heading_world_x, heading_world_y`
+- 到 target 的水平距离 `distance_xy`
+- 机器人头方向在 world 水平面的角度 `robot_heading_world_deg`
+- 目标方向在 world 水平面的角度 `target_azimuth_world_deg`
+- 机器人头方向到目标方向的水平有符号夹角 `heading_target_yaw_signed_deg`
+- 机器人头方向到目标方向的水平绝对夹角 `heading_target_yaw_abs_deg`
+
+角度只使用 `x-y` 平面，不使用 `z`。在 ROS 常用坐标约定下，机器人 body `+x` 是头/前方，body `+y` 是左侧，所以 `heading_target_yaw_signed_deg` 为正通常表示目标在机器人头方向左侧，为负表示在右侧。
 
 ## 提取单个 Bag
 

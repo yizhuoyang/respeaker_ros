@@ -123,23 +123,50 @@ def extract_bag(bag_db, output_dir, topics, start_ns=None, end_ns=None):
         write_topic_manifest(output_dir, topic_map, topics, start_ns, end_ns)
 
         for label, topic_name in topics.items():
-            if topic_name not in topic_map:
+            resolved_topic_name = resolve_topic_name(topic_name, topic_map, label)
+            if resolved_topic_name not in topic_map:
                 print(f"  Skip missing topic: {topic_name}")
                 continue
 
-            topic_id, type_name = topic_map[topic_name]
+            topic_id, type_name = topic_map[resolved_topic_name]
             try:
                 msg_type = get_message(type_name)
             except (AttributeError, ModuleNotFoundError, ValueError) as exc:
-                print(f"  Skip {topic_name}: cannot import message type {type_name}: {exc}")
+                print(f"  Skip {resolved_topic_name}: cannot import message type {type_name}: {exc}")
                 continue
 
             if label in ("color", "depth"):
-                extract_images(conn, topic_id, msg_type, output_dir, label, topic_name, start_ns, end_ns)
+                extract_images(
+                    conn,
+                    topic_id,
+                    msg_type,
+                    type_name,
+                    output_dir,
+                    label,
+                    resolved_topic_name,
+                    start_ns,
+                    end_ns,
+                )
             elif label in ("lio_odom", "lio_robo_odom"):
-                extract_odom(conn, topic_id, msg_type, output_dir, label, topic_name, start_ns, end_ns)
+                extract_odom(conn, topic_id, msg_type, output_dir, label, resolved_topic_name, start_ns, end_ns)
             elif label == "livox":
-                extract_livox(conn, topic_id, msg_type, output_dir, label, topic_name, start_ns, end_ns)
+                extract_livox(conn, topic_id, msg_type, output_dir, label, resolved_topic_name, start_ns, end_ns)
+
+
+def resolve_topic_name(topic_name, topic_map, label):
+    if topic_name in topic_map:
+        return topic_name
+
+    if label in ("color", "depth"):
+        compressed_topic = f"{topic_name}/compressed"
+        if compressed_topic in topic_map:
+            return compressed_topic
+
+        compressed_depth_topic = f"{topic_name}/compressedDepth"
+        if compressed_depth_topic in topic_map:
+            return compressed_depth_topic
+
+    return topic_name
 
 
 def read_topic_map(conn):
@@ -176,10 +203,11 @@ def read_messages(conn, topic_id, start_ns=None, end_ns=None):
     return conn.execute(query, params)
 
 
-def extract_images(conn, topic_id, msg_type, output_dir, label, topic_name, start_ns=None, end_ns=None):
+def extract_images(conn, topic_id, msg_type, type_name, output_dir, label, topic_name, start_ns=None, end_ns=None):
     image_dir = output_dir / label
     image_dir.mkdir(parents=True, exist_ok=True)
     index_csv = image_dir / "index.csv"
+    is_compressed = type_name.endswith("/CompressedImage")
 
     with index_csv.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
@@ -191,6 +219,8 @@ def extract_images(conn, topic_id, msg_type, output_dir, label, topic_name, star
             "encoding",
             "height",
             "width",
+            "message_type",
+            "format",
             "file",
         ])
 
@@ -200,21 +230,90 @@ def extract_images(conn, topic_id, msg_type, output_dir, label, topic_name, star
             start=1,
         ):
             msg = deserialize_message(serialized, msg_type)
-            image = image_to_numpy(msg)
             stem = f"{count:06d}_{stamp_to_ns(msg.header.stamp)}"
-            saved_file = save_image_array(image_dir, stem, image, msg.encoding)
+            if is_compressed:
+                saved_file, height, width = save_compressed_image(image_dir, stem, msg, label)
+                encoding = "compressed"
+                image_format = msg.format
+            else:
+                image = image_to_numpy(msg)
+                saved_file = save_image_array(image_dir, stem, image, msg.encoding)
+                height = msg.height
+                width = msg.width
+                encoding = msg.encoding
+                image_format = ""
             writer.writerow([
                 count,
                 bag_stamp,
                 msg.header.stamp.sec,
                 msg.header.stamp.nanosec,
-                msg.encoding,
-                msg.height,
-                msg.width,
+                encoding,
+                height,
+                width,
+                type_name,
+                image_format,
                 saved_file.name,
             ])
 
     print(f"  {topic_name}: exported {count if 'count' in locals() else 0} image(s)")
+
+
+def save_compressed_image(image_dir, stem, msg, label):
+    decoded = decode_compressed_image(msg, label)
+    if decoded is not None:
+        path = image_dir / f"{stem}.png"
+        try:
+            import cv2
+            cv2.imwrite(str(path), decoded)
+            return path, decoded.shape[0], decoded.shape[1]
+        except ImportError:
+            path = image_dir / f"{stem}.npy"
+            np.save(path, decoded)
+            return path, decoded.shape[0], decoded.shape[1]
+
+    ext = compressed_extension(msg.format)
+    path = image_dir / f"{stem}{ext}"
+    path.write_bytes(bytes(msg.data))
+    return path, "", ""
+
+
+def decode_compressed_image(msg, label):
+    try:
+        import cv2
+    except ImportError:
+        return None
+
+    data = bytes(msg.data)
+    image_bytes = extract_embedded_image_bytes(data)
+    if image_bytes is None:
+        image_bytes = data
+
+    array = np.frombuffer(image_bytes, dtype=np.uint8)
+    flag = cv2.IMREAD_UNCHANGED if label == "depth" else cv2.IMREAD_COLOR
+    return cv2.imdecode(array, flag)
+
+
+def extract_embedded_image_bytes(data):
+    png_magic = b"\x89PNG\r\n\x1a\n"
+    png_pos = data.find(png_magic)
+    if png_pos >= 0:
+        return data[png_pos:]
+
+    jpeg_magic = b"\xff\xd8"
+    jpeg_pos = data.find(jpeg_magic)
+    if jpeg_pos >= 0:
+        return data[jpeg_pos:]
+
+    return None
+
+
+def compressed_extension(image_format):
+    fmt = image_format.lower()
+    if "jpeg" in fmt or "jpg" in fmt:
+        return ".jpg"
+    if "png" in fmt or "compresseddepth" in fmt:
+        return ".png"
+    return ".bin"
 
 
 def image_to_numpy(msg):
