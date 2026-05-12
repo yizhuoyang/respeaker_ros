@@ -11,6 +11,6 @@ wav_exports/
 synced_dataset/
 runs/
 weights/
-vis_result_doa/
-vis_result_dist/
+vis_*
 **/__pycache__/  
+audio_data/

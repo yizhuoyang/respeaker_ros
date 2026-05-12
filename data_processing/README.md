@@ -188,7 +188,7 @@ python data_processing/compute_doa_from_odom.py \
   --odom lio_odom \
   --input-frame lidar \
   --lidar-pitch-deg -23 \
-  --mic-translation -0.2,0.0,0.0
+  --mic-translation=-0.2,0.0,0.0
 ```
 
 如果数据集在更深层目录，增加：
@@ -510,11 +510,11 @@ audio/
 ```bash
 python data_processing/sync_from_bag_and_audio.py \
   --bag bags \
-  --audio audio \
+  --audio /home/kemove/yyz/audio-nav/respeaker_ros/wav_exports\
   --output synced_dataset \
-  --topics color,depth,lio_robo_odom \
+  --topics color,depth,lio_robo_odom,lio_odom \
   --segment-sec 1.0 \
-  --hop-sec 1.0
+  --hop-sec 0.2
 ```
 
 如果 bag 或 wav 在多层目录中：
@@ -541,3 +541,324 @@ python data_processing/extract_ros2_bag_data.py \
   --lio-robo-odom-topic /lio/robo/odom \
   --livox-topic /livox/lidar
 ```
+
+
+
+```bash
+python test_doa.py \
+  --data-root synced_dataset \
+  --val-clocks clock2 \
+  --eval-split val \
+  --model audio \
+  --allow-missing-depth \
+  --checkpoint weights/ssl_doa_distance_clock2_holdout_denoise/best_model.pth \
+  --indices all \
+  --doa-vis curve \
+  --vis-dir vis_result_doa_clock2 \
+  --vis-dist-dir vis_result_dist_clock2
+
+python data_processing/export_audio_from_bag.py \
+  --bag /media/kemove/T9/bag/new \
+  --topic /respeaker/audio_raw \
+  --out wav_exports
+
+
+```
+
+```bash
+python data_processing/truncate_synced_dataset.py \
+  --dataset synced_dataset/person5 \
+  --keep-through 249 \
+  --dry-run
+
+```
+
+## 过滤距离过近或过远的样本
+
+`filter_distance_bin_samples.py` 用于找出并处理距离目标过近或过远的样本。这类样本通常 DOA 标签容易不稳定，或者有效信号太弱。
+
+推荐直接按真实距离阈值过滤，例如处理 `distance_xy <= 0.3m` 的样本：
+
+先预览，不修改文件：
+
+```bash
+python data_processing/filter_distance_bin_samples.py \
+  --dataset synced_dataset \
+  --odom lio_odom \
+  --max-distance 0.3 \
+  --recursive \
+  --dry-run
+```
+
+确认后推荐先移动到备份目录：
+
+```bash
+python data_processing/filter_distance_bin_samples.py \
+  --dataset synced_dataset \
+  --odom lio_odom \
+  --max-distance 0.3 \
+  --recursive \
+  --action move
+```
+
+移动后的文件会放到每个序列目录下：
+
+```text
+synced_dataset/clockX/_filtered_dist_bin/
+```
+
+如果确定要直接删除：
+
+```bash
+python data_processing/filter_distance_bin_samples.py \
+  --dataset synced_dataset \
+  --odom lio_odom \
+  --max-distance 0.3 \
+  --recursive \
+  --action delete
+```
+
+如果要过滤距离过远的样本，例如处理 `distance_xy >= 5.0m`：
+
+```bash
+python data_processing/filter_distance_bin_samples.py \
+  --dataset synced_dataset \
+  --odom lio_odom \
+  --min-distance 5.0 \
+  --recursive \
+  --dry-run
+```
+
+也可以同时给上下界，例如处理 `0.3m <= distance_xy <= 5.0m`：
+
+```bash
+python data_processing/filter_distance_bin_samples.py \
+  --dataset synced_dataset \
+  --odom lio_odom \
+  --min-distance 0.3 \
+  --max-distance 5.0 \
+  --recursive \
+  --dry-run
+```
+
+如果要删除范围外的样本，例如删除 `distance_xy < 0.3m` 和 `distance_xy > 0.5m`，加 `--outside-range`：
+
+```bash
+python data_processing/filter_distance_bin_samples.py \
+  --dataset synced_dataset \
+  --odom lio_odom \
+  --min-distance 0.3 \
+  --max-distance 0.5 \
+  --outside-range \
+  --recursive \
+  --dry-run
+```
+
+也可以按 bin 范围过滤，例如删除 `dist_bin <= 3`：
+
+```bash
+python data_processing/filter_distance_bin_samples.py \
+  --dataset synced_dataset \
+  --odom lio_odom \
+  --max-bin 3 \
+  --recursive \
+  --dry-run
+```
+
+注意：`--bin 3` 表示只匹配第 3 个 bin；如果想包含 `0,1,2,3`，应使用 `--max-bin 3`。
+
+可选保存报告：
+
+```bash
+python data_processing/filter_distance_bin_samples.py \
+  --dataset synced_dataset \
+  --odom lio_odom \
+  --max-distance 0.3 \
+  --recursive \
+  --dry-run \
+  --write-report reports/near_distance_report.json
+```
+python test_doa.py \
+  --data-root synced_dataset \
+  --object-name clock \
+  --eval-split val \
+  --model audio \
+  --allow-missing-depth \
+  --checkpoint weights/ssl_doa_distance_clock/last_model.pth \
+  --indices all
+
+## 降噪策略
+
+当前训练和测试脚本中的 `--use-denoise` 会使用三类处理：
+
+- `audio_data/noise/robot_noise.wav`：常驻噪声，一直进行谱减抑制。
+- `audio_data/noise/moving_sound.wav`：运动噪声，只在当前音频帧检测到运动噪声特征时进行额外抑制。
+- 瞬态抑制：针对机器狗走路的短时“哒哒”冲击声，对所有通道使用同一个短时衰减包络。
+
+训练时启用默认降噪：
+
+```bash
+python main_doa.py \
+  --data-root synced_dataset \
+  --model audio \
+  --allow-missing-depth \
+  --use-denoise
+```
+
+测试时也要保持一致：
+
+```bash
+python test_doa.py \
+  --data-root synced_dataset \
+  --eval-split val \
+  --model audio \
+  --allow-missing-depth \
+  --use-denoise \
+  --checkpoint weights/ssl_doa_distance_synced/best_model.pth \
+  --indices all
+```
+
+如果要离线处理单个 wav：
+
+```bash
+python data_processing/denoise_multichannel_audio.py \
+  --input audio_data/signal/clock6_1778283274692668288.wav \
+  --output wav_exports/sample_denoised.wav \
+  --stationary-noise audio_data/noise/robot_noise.wav \
+  --motion-noise audio_data/noise/moving_sound.wav \
+  --channels 1,2,3,4 \
+  --spectral-strength 0.4 \
+  --gain-floor 0.5 \
+  --motion-strength 0.3 \
+  --motion-gain-floor 0.6 \
+  --transient-attenuation 0.6 \
+  --transient-threshold 2.2 \
+  --transient-frame-ms 18 \
+  --transient-hop-ms 4
+```
+
+如果要做更直接的实验：常驻 robot 噪声只用固定滤波器，运动冲击声用阈值置零，可以使用：
+
+```bash
+python data_processing/filter_and_mute_motion_noise.py \
+  --input audio_data/signal/clock6_1778283274692668288.wav \
+  --output wav_exports/sample_filter_mute.wav \
+  --channels 1,2,3,4 \
+  --motion-threshold 0.06 \
+  --mute-window-sec 0.05
+```
+
+这个脚本会先做高通和 notch 滤波，然后找出任一选中通道幅值大于 `0.06` 的位置，把这些位置左右各 `0.05s` 的选中通道都置零。输出会打印总共置零了多少秒。
+
+训练时也可以直接在 dataloader 中使用这套“固定滤波 + 运动冲击抑制”：
+
+```bash
+python main_doa.py \
+  --data-root synced_dataset \
+  --model audio \
+  --allow-missing-depth \
+  --use-filter-mute-denoise \
+  --filter-mute-threshold 0.06 \
+  --filter-mute-window-sec 0.05 \
+  --filter-mute-floor 0.02
+```
+
+测试时保持同样参数：
+
+```bash
+python test_doa.py \
+  --data-root synced_dataset \
+  --eval-split val \
+  --model audio \
+  --allow-missing-depth \
+  --use-filter-mute-denoise \
+  --filter-mute-threshold 0.06 \
+  --filter-mute-window-sec 0.05 \
+  --filter-mute-floor 0.02 \
+  --checkpoint weights/ssl_doa_distance_synced/best_model.pth \
+  --indices all
+```
+
+注意：如果 `--filter-mute-floor 0`，对应片段会被硬置零，STFT 相位在低能量帧可能不稳定，IPD 特征也会更抖。默认 `0.02` 是强衰减而不是完全置零，通常更适合训练。
+
+为了让模型适应运动冲击声被移除后的缺失片段，可以只在训练时增加 time masking：
+
+```bash
+python main_doa.py \
+  --data-root synced_dataset \
+  --model audio \
+  --allow-missing-depth \
+  --use-filter-mute-denoise \
+  --filter-mute-threshold 0.06 \
+  --filter-mute-window-sec 0.05 \
+  --filter-mute-floor 0.02 \
+  --use-time-mask \
+  --time-mask-prob 0.5 \
+  --time-mask-num 1 \
+  --time-mask-max-width 12
+```
+
+`time-mask-max-width` 是特征帧数量。当前音频特征 hop 是 160 samples，在 16kHz 下约等于 `10ms`，所以 `12` 大约对应 `120ms`。验证和测试不会使用 time masking。
+
+## 使用 DeepMusic 模型训练
+
+新的 DeepMusic 数据加载器会读取当前的 `synced_dataset/train` 和 `synced_dataset/test`，输出 `(spectrogram, doa, steering_vector, correlation)`，用于 `network/audionet/DeepMusic_auto.py` 中的 `DeepMusic_plus`。
+
+基础训练：
+
+```bash
+python model_training/train_deepmusic_synced.py \
+  --data-root synced_dataset \
+  --object-name clock \
+  --epochs 80 \
+  --batch-size 16 \
+  --save-dir weights/deepmusic_clock
+```
+
+开启几何增强、噪声增强、time masking 和运动冲击抑制：
+
+```bash
+python model_training/train_deepmusic_synced.py \
+  --data-root synced_dataset \
+  --object-name clock \
+  --geometry-aug \
+  --noise-aug \
+  --time-mask \
+  --use-filter-mute-denoise \
+  --filter-mute-threshold 0.06 \
+  --filter-mute-window-sec 0.05 \
+  --filter-mute-floor 0.02 \
+  --epochs 80 \
+  --batch-size 16 \
+  --save-dir weights/deepmusic_clock_aug
+```
+
+其中 `--geometry-aug` 会在训练时随机旋转阵列 steering vector 和 DOA 标签，从而生成更多角度样本；测试集不会使用这些增强。
+
+测试 DeepMusic 模型：
+
+```bash
+python model_training/test_deepmusic_synced.py \
+  --data-root synced_dataset \
+  --object-name clock \
+  --checkpoint weights/deepmusic_clock_aug/best_model \
+  --batch-size 16 \
+  --save-csv reports/deepmusic_clock_test.csv
+```
+
+如果训练时使用了运动冲击抑制，测试时也要加同样的预处理：
+
+```bash
+python model_training/test_deepmusic_synced.py \
+  --data-root synced_dataset \
+  --object-name clock \
+  --checkpoint weights/deepmusic_clock_aug/best_model \
+  --use-filter-mute-denoise \
+  --filter-mute-threshold 0.06 \
+  --filter-mute-window-sec 0.05 \
+  --filter-mute-floor 0.02 \
+  --batch-size 16 \
+  --save-csv reports/deepmusic_clock_test.csv
+```
+
+输出会打印 spectrum MSE，以及 soft-argmax 和 peak-bin 两种角度误差。

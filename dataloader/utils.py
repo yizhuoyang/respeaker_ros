@@ -3,6 +3,7 @@ import librosa
 from skimage.measure import block_reduce
 from PIL import Image
 from scipy.io import wavfile
+from scipy.signal import butter, iirnotch, istft, medfilt, sosfiltfilt, stft, tf2sos
 
 
 def compute_stft(signal, use_compress=True):
@@ -102,7 +103,7 @@ def parse_channel_pairs(value):
     return tuple(tuple(pair) for pair in value)
 
 
-def load_audio_wav(path, channels=(0, 1, 2, 3)):
+def load_audio_wav(path, channels=(1, 2, 3, 4)):
     sample_rate, audio = wavfile.read(path)
     audio = np.asarray(audio)
     if audio.ndim == 1:
@@ -119,6 +120,318 @@ def load_audio_wav(path, channels=(0, 1, 2, 3)):
             f"Audio file {path} has {audio.shape[1]} channels, requested channels {channels}"
         )
     return audio[:, channels].T, sample_rate
+
+
+def parse_float_list(value):
+    if value is None or str(value).strip() == "":
+        return []
+    return [float(item.strip()) for item in str(value).split(",") if item.strip()]
+
+
+def load_noise_profile(
+    noise_paths,
+    channels,
+    sample_rate,
+    n_fft=1024,
+    hop=256,
+    highpass_hz=90.0,
+    notches_hz=(48.0, 180.0, 342.0, 1845.0),
+    notch_q=35.0,
+):
+    powers = []
+    for path in noise_paths:
+        noise, noise_sr = load_audio_wav(path, channels)
+        if noise_sr != sample_rate:
+            raise RuntimeError(
+                f"Noise sample rate mismatch: {path} has {noise_sr}, expected {sample_rate}"
+            )
+        noise = apply_shared_time_filters(
+            noise,
+            sample_rate=sample_rate,
+            highpass_hz=highpass_hz,
+            notches_hz=notches_hz,
+            notch_q=notch_q,
+        )
+        _, _, noise_stft = stft(
+            noise,
+            fs=sample_rate,
+            nperseg=n_fft,
+            noverlap=n_fft - hop,
+            axis=-1,
+            boundary=None,
+        )
+        powers.append(np.mean(np.abs(noise_stft) ** 2, axis=(0, 2)))
+
+    if not powers:
+        return None
+    return np.mean(np.stack(powers, axis=0), axis=0).astype(np.float32)
+
+
+def denoise_multichannel_audio(
+    audio,
+    sample_rate,
+    noise_power=None,
+    highpass_hz=90.0,
+    notches_hz=(48.0, 180.0, 342.0, 1845.0),
+    notch_q=35.0,
+    spectral_strength=0.6,
+    gain_floor=0.35,
+    n_fft=1024,
+    hop=256,
+):
+    """Denoise audio shaped (C, N) while preserving inter-channel phase cues."""
+    denoised = apply_shared_time_filters(
+        audio,
+        sample_rate=sample_rate,
+        highpass_hz=highpass_hz,
+        notches_hz=notches_hz,
+        notch_q=notch_q,
+    )
+    if noise_power is None or spectral_strength <= 0:
+        return denoised.astype(np.float32)
+
+    return apply_shared_spectral_gate(
+        denoised,
+        sample_rate=sample_rate,
+        noise_power=noise_power,
+        n_fft=n_fft,
+        hop=hop,
+        strength=spectral_strength,
+        gain_floor=gain_floor,
+    )
+
+
+def apply_motion_gated_spectral_gate(
+    audio,
+    sample_rate,
+    noise_power,
+    n_fft=1024,
+    hop=256,
+    strength=0.35,
+    gain_floor=0.55,
+    gate_threshold=1.6,
+    gate_smooth_frames=5,
+):
+    """Apply spectral subtraction only on frames that look like motion noise.
+
+    The gate is computed from a noise-profile-weighted energy ratio. The same
+    time-frequency gain is then applied to every channel, keeping IPD cues intact.
+    """
+    if noise_power is None or strength <= 0:
+        return np.asarray(audio, dtype=np.float32)
+
+    _, _, spectrum = stft(
+        audio,
+        fs=sample_rate,
+        nperseg=n_fft,
+        noverlap=n_fft - hop,
+        axis=-1,
+        boundary="zeros",
+    )
+    signal_power = np.mean(np.abs(spectrum) ** 2, axis=0)
+    weights = noise_power / (np.mean(noise_power) + 1e-10)
+    weights = weights / (np.sum(weights) + 1e-10)
+    expected_noise = float(np.sum(noise_power * weights)) + 1e-10
+    motion_score = np.sum(signal_power * weights[:, None], axis=0) / expected_noise
+    gate = (motion_score >= gate_threshold).astype(np.float32)
+    if gate_smooth_frames and gate_smooth_frames > 1 and gate.size > 1:
+        kernel = np.ones(int(gate_smooth_frames), dtype=np.float32)
+        kernel = kernel / kernel.sum()
+        gate = np.convolve(gate, kernel, mode="same").astype(np.float32)
+        gate = np.clip(gate, 0.0, 1.0)
+
+    if float(np.max(gate)) <= 0.0:
+        return np.asarray(audio, dtype=np.float32)
+
+    gain = 1.0 - strength * gate[None, :] * noise_power[:, None] / (signal_power + 1e-10)
+    gain = np.clip(gain, gain_floor, 1.0).astype(np.float32)
+    gated = spectrum * gain[None, :, :]
+
+    restored_channels = []
+    for channel in range(gated.shape[0]):
+        _, restored = istft(
+            gated[channel],
+            fs=sample_rate,
+            nperseg=n_fft,
+            noverlap=n_fft - hop,
+            input_onesided=True,
+        )
+        restored_channels.append(restored)
+    restored = np.stack(restored_channels, axis=0).astype(np.float32)
+    return restored[:, : audio.shape[1]]
+
+
+def suppress_shared_transients(
+    audio,
+    sample_rate,
+    frame_ms=20.0,
+    hop_ms=5.0,
+    threshold=3.0,
+    attenuation=0.5,
+    smooth_frames=5,
+):
+    """Suppress short broadband impulses with one shared gain envelope.
+
+    This targets footstep-like ticks/thuds. The same envelope is applied to all
+    channels so inter-channel phase and relative timing are not independently
+    distorted.
+    """
+    audio = np.asarray(audio, dtype=np.float32)
+    if attenuation <= 0 or threshold <= 0 or audio.shape[-1] == 0:
+        return audio
+
+    frame = max(8, int(round(sample_rate * frame_ms / 1000.0)))
+    hop = max(1, int(round(sample_rate * hop_ms / 1000.0)))
+    num_samples = audio.shape[1]
+    if num_samples < frame:
+        return audio
+
+    energies = []
+    starts = list(range(0, num_samples - frame + 1, hop))
+    for start in starts:
+        segment = audio[:, start:start + frame]
+        energies.append(float(np.mean(segment * segment)))
+    energies = np.asarray(energies, dtype=np.float32)
+    if energies.size < 3:
+        return audio
+
+    kernel_size = max(3, int(round(0.5 * sample_rate / hop)))
+    if kernel_size % 2 == 0:
+        kernel_size += 1
+    kernel_size = min(kernel_size, energies.size if energies.size % 2 == 1 else energies.size - 1)
+    if kernel_size < 3:
+        return audio
+
+    baseline = medfilt(energies, kernel_size=kernel_size).astype(np.float32)
+    baseline = np.maximum(baseline, np.percentile(energies, 20) + 1e-10)
+    ratio = energies / baseline
+    transient = np.clip((ratio - threshold) / max(threshold, 1e-6), 0.0, 1.0)
+
+    if smooth_frames and smooth_frames > 1:
+        kernel = np.ones(int(smooth_frames), dtype=np.float32)
+        kernel = kernel / kernel.sum()
+        transient = np.convolve(transient, kernel, mode="same").astype(np.float32)
+        transient = np.clip(transient, 0.0, 1.0)
+
+    frame_gain = 1.0 - attenuation * transient
+    envelope = np.ones(num_samples, dtype=np.float32)
+    weight = np.zeros(num_samples, dtype=np.float32)
+    for start, gain in zip(starts, frame_gain):
+        envelope[start:start + frame] += gain
+        weight[start:start + frame] += 1.0
+    valid = weight > 0
+    envelope[valid] = envelope[valid] / (weight[valid] + 1.0)
+    return (audio * envelope[None, :]).astype(np.float32)
+
+
+def filter_and_mute_motion_impacts(
+    audio,
+    sample_rate,
+    highpass_hz=120.0,
+    notches_hz=(48.8, 66.4, 179.7, 341.8, 867.2, 1271.5, 1845.7, 2533.2, 3783.2),
+    notch_q=35.0,
+    motion_threshold=0.06,
+    mute_window_sec=0.05,
+    mute_floor=0.02,
+    edge_smooth_ms=5.0,
+):
+    """Fixed robot-noise filtering plus shared motion-impact muting.
+
+    audio is shaped (C, N). The mute envelope is shared across channels to avoid
+    channel-dependent phase/timing distortion. mute_floor=0 gives hard zeros;
+    a small positive floor avoids undefined/unstable phase in STFT features.
+    """
+    filtered = apply_shared_time_filters(
+        audio,
+        sample_rate=sample_rate,
+        highpass_hz=highpass_hz,
+        notches_hz=notches_hz,
+        notch_q=notch_q,
+    )
+    mask = make_motion_mute_mask(
+        filtered,
+        sample_rate=sample_rate,
+        threshold=motion_threshold,
+        window_sec=mute_window_sec,
+    )
+    if not np.any(mask):
+        return filtered.astype(np.float32)
+
+    floor = float(np.clip(mute_floor, 0.0, 1.0))
+    gain = np.ones(filtered.shape[1], dtype=np.float32)
+    gain[mask] = floor
+
+    edge_samples = int(round(edge_smooth_ms * sample_rate / 1000.0))
+    if edge_samples > 1 and floor > 0.0:
+        kernel = np.ones(edge_samples, dtype=np.float32)
+        kernel = kernel / kernel.sum()
+        gain = np.convolve(gain, kernel, mode="same").astype(np.float32)
+        gain = np.clip(gain, floor, 1.0)
+
+    return (filtered * gain[None, :]).astype(np.float32)
+
+
+def make_motion_mute_mask(audio, sample_rate, threshold=0.06, window_sec=0.05):
+    audio = np.asarray(audio, dtype=np.float32)
+    if threshold <= 0:
+        raise RuntimeError("motion_threshold must be positive")
+    if window_sec < 0:
+        raise RuntimeError("mute_window_sec must be non-negative")
+    if audio.ndim != 2:
+        raise RuntimeError(f"Expected audio shape (C, N), got {audio.shape}")
+
+    amplitude = np.max(np.abs(audio), axis=0)
+    trigger = amplitude > threshold
+    if not np.any(trigger):
+        return np.zeros(audio.shape[1], dtype=bool)
+
+    radius = int(round(window_sec * sample_rate))
+    kernel = np.ones(radius * 2 + 1, dtype=np.int16)
+    expanded = np.convolve(trigger.astype(np.int16), kernel, mode="same") > 0
+    return expanded[: audio.shape[1]]
+
+
+def apply_shared_time_filters(audio, sample_rate, highpass_hz=90.0, notches_hz=None, notch_q=35.0):
+    filtered = np.asarray(audio, dtype=np.float32).T
+    if highpass_hz and highpass_hz > 0:
+        sos = butter(4, highpass_hz, btype="highpass", fs=sample_rate, output="sos")
+        filtered = sosfiltfilt(sos, filtered, axis=0).astype(np.float32)
+
+    for freq in notches_hz or []:
+        if freq <= 0 or freq >= sample_rate / 2:
+            continue
+        b, a = iirnotch(freq, notch_q, fs=sample_rate)
+        sos = tf2sos(b, a)
+        filtered = sosfiltfilt(sos, filtered, axis=0).astype(np.float32)
+    return filtered.T.astype(np.float32)
+
+
+def apply_shared_spectral_gate(audio, sample_rate, noise_power, n_fft=1024, hop=256, strength=0.6, gain_floor=0.35):
+    _, _, spectrum = stft(
+        audio,
+        fs=sample_rate,
+        nperseg=n_fft,
+        noverlap=n_fft - hop,
+        axis=-1,
+        boundary="zeros",
+    )
+    signal_power = np.mean(np.abs(spectrum) ** 2, axis=0)
+    gain = 1.0 - strength * noise_power[:, None] / (signal_power + 1e-10)
+    gain = np.clip(gain, gain_floor, 1.0).astype(np.float32)
+    gated = spectrum * gain[None, :, :]
+
+    restored_channels = []
+    for channel in range(gated.shape[0]):
+        _, restored = istft(
+            gated[channel],
+            fs=sample_rate,
+            nperseg=n_fft,
+            noverlap=n_fft - hop,
+            input_onesided=True,
+        )
+        restored_channels.append(restored)
+    restored = np.stack(restored_channels, axis=0).astype(np.float32)
+    return restored[:, : audio.shape[1]]
 
 
 def load_image(path, normalize_rgb=True, image_size=None):

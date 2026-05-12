@@ -26,7 +26,7 @@ def train_one_epoch(
     writer=None,
     global_step=0,
     criterion=None,
-    distance_weight=0.5,
+    distance_weight=0,
 ):
     model.train()
     running_loss = 0.0
@@ -86,7 +86,7 @@ def validate(
     writer=None,
     max_images=3,
     criterion=None,
-    distance_weight=0.5,
+    distance_weight=0,
 ):
     model.eval()
     running_loss = 0.0
