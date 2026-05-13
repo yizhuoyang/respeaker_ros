@@ -835,6 +835,19 @@ python model_training/train_deepmusic_synced.py \
 
 其中 `--geometry-aug` 会在训练时随机旋转阵列 steering vector 和 DOA 标签，从而生成更多角度样本；测试集不会使用这些增强。
 
+检查 geometry augmentation 是否生效：
+
+```bash
+python dataloader/test_geometry_aug.py \
+  --data-root synced_dataset \
+  --split train \
+  --object-name clock \
+  --index 0 \
+  --repeats 20
+```
+
+它会反复读取同一个样本，打印增强后的 DOA、推断出的旋转角，以及 steering vector 的变化量。
+
 测试 DeepMusic 模型：
 
 ```bash

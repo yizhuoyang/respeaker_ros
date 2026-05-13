@@ -14,3 +14,7 @@ weights/
 vis_*
 **/__pycache__/  
 audio_data/
+reports/
+
+
+

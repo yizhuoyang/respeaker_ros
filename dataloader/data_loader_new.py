@@ -127,6 +127,10 @@ class SyncedDeepMusicDataset(Dataset):
         n_fft=512,
         hop_length=256,
         output_time_frames=64,
+        min_freq_hz=2000.0,
+        max_audio_abs=0.06,
+        min_distance=None,
+        max_distance=None,
         speed_of_sound=343.0,
         mic_geometry="respeaker_v3",
         mic_radius=0.032,
@@ -134,7 +138,7 @@ class SyncedDeepMusicDataset(Dataset):
         mic_channel_order=None,
         mic_positions=None,
         geometry_aug=False,
-        geometry_aug_step_deg=5.0,
+        geometry_aug_step_deg=1.0,
         noise_aug=False,
         snr_min_db=0.0,
         snr_max_db=25.0,
@@ -157,6 +161,10 @@ class SyncedDeepMusicDataset(Dataset):
         self.n_fft = n_fft
         self.hop_length = hop_length
         self.output_time_frames = output_time_frames
+        self.min_freq_hz = min_freq_hz
+        self.max_audio_abs = max_audio_abs
+        self.min_distance = min_distance
+        self.max_distance = max_distance
         self.speed_of_sound = speed_of_sound
         self.mic_geometry = mic_geometry
         self.mic_positions = resolve_mic_positions(
@@ -181,9 +189,22 @@ class SyncedDeepMusicDataset(Dataset):
         self.filter_mute_threshold = filter_mute_threshold
         self.filter_mute_window_sec = filter_mute_window_sec
         self.filter_mute_floor = filter_mute_floor
+        self.skipped_by_amplitude = 0
+        self.skipped_by_distance = 0
         self.samples = self._collect_samples()
         if not self.samples:
             raise RuntimeError(f"No DeepMUSIC samples found under {root} split={split}")
+        if self.max_audio_abs and self.skipped_by_amplitude:
+            print(
+                f"[SyncedDeepMusicDataset] split={split}: skipped "
+                f"{self.skipped_by_amplitude} samples with max_abs > {self.max_audio_abs}"
+            )
+        if (self.min_distance is not None or self.max_distance is not None) and self.skipped_by_distance:
+            print(
+                f"[SyncedDeepMusicDataset] split={split}: skipped "
+                f"{self.skipped_by_distance} samples outside distance range "
+                f"[{self.min_distance}, {self.max_distance}]"
+            )
 
     def _collect_samples(self):
         split_root = self.root / self.split
@@ -196,18 +217,56 @@ class SyncedDeepMusicDataset(Dataset):
                 continue
             audio_dir = seq_dir / "audio"
             doa_dir = seq_dir / f"doa_{self.odom_name}"
+            distance_dir = seq_dir / f"distance_{self.odom_name}"
             if not audio_dir.exists() or not doa_dir.exists():
                 continue
             for audio_path in sorted(audio_dir.glob("*.wav"), key=lambda p: numeric_stem(p.stem)):
                 doa_path = doa_dir / f"{audio_path.stem}.npy"
-                if doa_path.exists():
-                    samples.append({
-                        "sequence": seq_dir.name,
-                        "audio": audio_path,
-                        "doa": doa_path,
-                        "sample_id": audio_path.stem,
-                    })
+                if not doa_path.exists():
+                    continue
+                distance_path = distance_dir / f"{audio_path.stem}.npy"
+                distance_xy = self._load_distance_xy(doa_path, distance_path)
+                if self._should_skip_by_distance(distance_xy):
+                    self.skipped_by_distance += 1
+                    continue
+                if self._should_skip_audio_by_amplitude(audio_path):
+                    self.skipped_by_amplitude += 1
+                    continue
+                samples.append({
+                    "sequence": seq_dir.name,
+                    "audio": audio_path,
+                    "doa": doa_path,
+                    "distance": distance_path if distance_path.exists() else None,
+                    "distance_xy": distance_xy,
+                    "sample_id": audio_path.stem,
+                })
         return samples
+
+    def _load_distance_xy(self, doa_path, distance_path):
+        if distance_path.exists():
+            distance_values = np.load(distance_path).astype(np.float32).reshape(-1)
+            if len(distance_values) > 0:
+                return float(distance_values[0])
+        doa_values = np.load(doa_path).astype(np.float32).reshape(-1)
+        doa = array_to_named_values(doa_values, DOA_FIELDS)
+        return float(doa.get("distance_xy", np.nan))
+
+    def _should_skip_by_distance(self, distance_xy):
+        if not np.isfinite(distance_xy):
+            return self.min_distance is not None or self.max_distance is not None
+        if self.min_distance is not None and distance_xy < self.min_distance:
+            return True
+        if self.max_distance is not None and distance_xy > self.max_distance:
+            return True
+        return False
+
+    def _should_skip_audio_by_amplitude(self, audio_path):
+        if self.max_audio_abs is None or self.max_audio_abs <= 0:
+            return False
+        audio, sample_rate = load_audio_wav(audio_path, self.audio_channels)
+        if sample_rate != self.sample_rate:
+            raise RuntimeError(f"{audio_path} has sample_rate={sample_rate}, expected {self.sample_rate}")
+        return float(np.max(np.abs(audio))) > float(self.max_audio_abs)
 
     def __len__(self):
         return len(self.samples)
@@ -241,7 +300,9 @@ class SyncedDeepMusicDataset(Dataset):
             window=torch.hann_window(self.n_fft),
             return_complex=True,
         )
+        stft_tensor = self.crop_high_frequency_stft(stft_tensor, sample_rate)
         correlation = compute_correlation_matrices_torch(stft_tensor)
+        correlation = resize_complex_frequency_axis(correlation, self.n_fft // 2 + 1)
         spectrogram = self.spectrogram_process(stft_tensor)
         if self.time_mask:
             spectrogram = apply_time_mask(spectrogram, self.time_mask_prob, self.time_mask_max_width)
@@ -257,6 +318,8 @@ class SyncedDeepMusicDataset(Dataset):
             mic_positions=mic_positions,
             sample_rate=self.sample_rate,
             n_fft=self.n_fft,
+            min_freq_hz=self.min_freq_hz,
+            num_freq_bins=self.n_fft // 2 + 1,
             speed_of_sound=self.speed_of_sound,
         )
 
@@ -278,6 +341,20 @@ class SyncedDeepMusicDataset(Dataset):
             align_corners=False,
         ).squeeze(0)
         return spectrogram.float()
+
+    def crop_high_frequency_stft(self, stft_tensor, sample_rate):
+        if self.min_freq_hz is None or self.min_freq_hz <= 0:
+            return stft_tensor
+        freq_bins = torch.fft.rfftfreq(self.n_fft, d=1.0 / float(sample_rate))
+        keep_mask = freq_bins >= float(self.min_freq_hz)
+        if not bool(torch.any(keep_mask)):
+            raise RuntimeError(
+                f"min_freq_hz={self.min_freq_hz} is higher than Nyquist frequency "
+                f"{sample_rate / 2.0}"
+            )
+        if bool(torch.all(keep_mask)):
+            return stft_tensor
+        return stft_tensor[:, keep_mask, :]
 
     def _sample_rotation_deg(self):
         if not self.geometry_aug:
@@ -333,7 +410,14 @@ def rotate_mic_positions(mic_positions, rotation_deg):
     return np.asarray(mic_positions, dtype=np.float32) @ rotation.T
 
 
-def make_far_field_steering_vector(mic_positions, sample_rate=16000, n_fft=512, speed_of_sound=343.0):
+def make_far_field_steering_vector(
+    mic_positions,
+    sample_rate=16000,
+    n_fft=512,
+    min_freq_hz=0.0,
+    num_freq_bins=None,
+    speed_of_sound=343.0,
+):
     mic_positions = torch.as_tensor(mic_positions, dtype=torch.float32)
     angles = torch.arange(360, dtype=torch.float32) * torch.pi / 180.0
     directions = torch.stack([
@@ -342,13 +426,37 @@ def make_far_field_steering_vector(mic_positions, sample_rate=16000, n_fft=512, 
         torch.zeros_like(angles),
     ], dim=1)
     tau = directions @ mic_positions.T / speed_of_sound
-    freqs = torch.arange(n_fft // 2 + 1, dtype=torch.float32) * sample_rate / n_fft
+    if min_freq_hz is not None and min_freq_hz > 0:
+        num_freq_bins = num_freq_bins or (n_fft // 2 + 1)
+        nyquist_hz = sample_rate / 2.0
+        if min_freq_hz > nyquist_hz:
+            raise RuntimeError(f"min_freq_hz={min_freq_hz} is higher than Nyquist frequency {nyquist_hz}")
+        freqs = torch.linspace(float(min_freq_hz), float(nyquist_hz), int(num_freq_bins), dtype=torch.float32)
+    else:
+        freqs = torch.arange(n_fft // 2 + 1, dtype=torch.float32) * sample_rate / n_fft
     phase = 2.0 * torch.pi * freqs[:, None, None] * tau.T[None, :, :]
     return torch.exp(1j * phase).to(torch.complex64)
 
 
+def resize_complex_frequency_axis(tensor, num_freq_bins):
+    if tensor.shape[0] == num_freq_bins:
+        return tensor
+    freq_bins, rows, cols = tensor.shape
+    real = tensor.real.permute(1, 2, 0).reshape(1, rows * cols, freq_bins)
+    imag = tensor.imag.permute(1, 2, 0).reshape(1, rows * cols, freq_bins)
+    real = torch.nn.functional.interpolate(real, size=num_freq_bins, mode="linear", align_corners=False)
+    imag = torch.nn.functional.interpolate(imag, size=num_freq_bins, mode="linear", align_corners=False)
+    real = real.reshape(rows, cols, num_freq_bins).permute(2, 0, 1)
+    imag = imag.reshape(rows, cols, num_freq_bins).permute(2, 0, 1)
+    return torch.complex(real, imag).to(tensor.dtype)
+
+
 def yaw_to_deepmusic_angle(yaw_signed_deg):
     return (90.0 + yaw_signed_deg) % 360.0
+
+
+def circular_abs_diff_deg(first, second):
+    return abs((first - second + 180.0) % 360.0 - 180.0)
 
 
 def array_to_named_values(values, fields):

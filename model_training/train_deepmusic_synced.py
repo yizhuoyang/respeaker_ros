@@ -26,6 +26,10 @@ def main():
         odom_name=args.odom,
         object_names=args.object_name,
         audio_channels=audio_channels,
+        min_freq_hz=args.min_freq_hz,
+        max_audio_abs=args.max_audio_abs,
+        min_distance=args.min_distance,
+        max_distance=args.max_distance,
         mic_geometry=args.mic_geometry,
         mic_radius=args.mic_radius,
         mic_rotation_deg=args.mic_rotation_deg,
@@ -49,6 +53,10 @@ def main():
         odom_name=args.odom,
         object_names=args.object_name,
         audio_channels=audio_channels,
+        min_freq_hz=args.min_freq_hz,
+        max_audio_abs=args.max_audio_abs,
+        min_distance=args.min_distance,
+        max_distance=args.max_distance,
         mic_geometry=args.mic_geometry,
         mic_radius=args.mic_radius,
         mic_rotation_deg=args.mic_rotation_deg,
@@ -121,6 +129,10 @@ def parse_args():
     parser.add_argument("--object-name", default=None, help="Optional object filter, e.g. clock,dryer,person,guitar.")
     parser.add_argument("--odom", default="lio_odom", choices=["lio_odom", "lio_robo_odom"])
     parser.add_argument("--audio-channels", default="1,2,3,4")
+    parser.add_argument("--min-freq-hz", type=float, default=2000.0, help="Use only STFT bins at or above this frequency.")
+    parser.add_argument("--max-audio-abs", type=float, default=0.06, help="Skip samples whose selected-channel max abs amplitude is above this value. Use <=0 to disable.")
+    parser.add_argument("--min-distance", type=float, default=None, help="Only load samples with distance_xy >= this value.")
+    parser.add_argument("--max-distance", type=float, default=None, help="Only load samples with distance_xy <= this value.")
     parser.add_argument("--mic-geometry", default="respeaker_v3", choices=["respeaker_v3", "circular"])
     parser.add_argument(
         "--mic-radius",
@@ -142,7 +154,7 @@ def parse_args():
     parser.add_argument("--save-dir", default="weights/deepmusic_synced")
     parser.add_argument("--no-attention", action="store_true")
     parser.add_argument("--geometry-aug", action="store_true", help="Rotate array steering vectors and labels during training.")
-    parser.add_argument("--geometry-aug-step-deg", type=float, default=5.0)
+    parser.add_argument("--geometry-aug-step-deg", type=float, default=1.0)
     parser.add_argument("--noise-aug", action="store_true")
     parser.add_argument("--snr-min-db", type=float, default=0.0)
     parser.add_argument("--snr-max-db", type=float, default=25.0)
