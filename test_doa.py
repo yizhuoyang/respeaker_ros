@@ -2,12 +2,15 @@ import argparse
 import os
 from pathlib import Path
 
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch.utils.data import Subset, random_split
 
-from dataloader.ssl_dataset import SingleStepDataset
+from dataloader.ssl_dataset import CLASS_NAMES, SingleStepDataset
 from dataloader.utils import parse_channel_pairs
 from model_training.train_doa import combined_loss
 from network.audionet.ssl_net import SSLNet_DOA, SSLNet_depth_DOA
@@ -35,6 +38,7 @@ def parse_args():
     parser.add_argument("--checkpoint", default="weights/ssl_doa_distance_synced/best_model.pth")
     parser.add_argument("--model", default="audio_depth", choices=["audio", "audio_depth"])
     parser.add_argument("--indices", default="0,1,2,3,4,5,6,7,8,9")
+    parser.add_argument("--print-samples", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--save-vis", action="store_true", help="Save DOA and distance visualization images.")
     parser.add_argument("--vis-dir", default="vis_result_doa")
     parser.add_argument("--vis-dist-dir", default="vis_result_dist")
@@ -42,6 +46,16 @@ def parse_args():
     parser.add_argument("--audio-feat", default="ipd", choices=["ipd", "spec", "phase", "both", "gcc_phat_complex"])
     parser.add_argument("--audio-channels", default="1,2,3,4")
     parser.add_argument("--ipd-pairs", default="0-1,0-2,0-3,1-2,1-3,2-3")
+    parser.add_argument("--audio-bandpass-low-hz", type=float, default=0.0)
+    parser.add_argument("--audio-bandpass-high-hz", type=float, default=0.0)
+    parser.add_argument("--min-distance", type=float, default=None, help="Only load samples with distance_xy >= this value.")
+    parser.add_argument("--max-distance", type=float, default=None, help="Only load samples with distance_xy <= this value.")
+    parser.add_argument("--use-classification", action="store_true", help="Enable 3-class classification branch while testing.")
+    parser.add_argument("--classification-only", action="store_true", help="Evaluate only the 3-class classification branch.")
+    parser.add_argument("--gate-doa-by-pred-class", action="store_true", help="Only compute DOA/distance loss when predicted class is signal_static.")
+    parser.add_argument("--classification-weight", type=float, default=1.0)
+    parser.add_argument("--distance-weight", type=float, default=0.5)
+    parser.add_argument("--max-signal-abs", type=float, default=0.06)
     parser.add_argument("--use-denoise", action="store_true", help="Enable default dataloader denoising.")
     parser.add_argument("--denoise-noise", action="append", default=None, help="Backward-compatible stationary noise wav override. Can be repeated.")
     parser.add_argument("--denoise-stationary-noise", action="append", default=None, help="Always-present noise wavs, e.g. robot/lidar noise. Can be repeated.")
@@ -104,13 +118,18 @@ def get_motion_noise_paths(args):
 
 def build_model(args, audio_in_channels):
     if args.model == "audio":
-        return SSLNet_DOA(use_compress=args.use_compress, audio_in_channels=audio_in_channels)
+        return SSLNet_DOA(
+            use_compress=args.use_compress,
+            audio_in_channels=audio_in_channels,
+            num_classes=3 if args.use_classification else 0,
+        )
     return SSLNet_depth_DOA(
         use_compress=args.use_compress,
         audio_in_channels=audio_in_channels,
         pretrained_depth_encoder=not args.no_pretrained_depth,
         freeze_depth_encoder=False,
         drop_depth_prob=0.0,
+        num_classes=3 if args.use_classification else 0,
     )
 
 
@@ -159,6 +178,12 @@ def build_dataset(root, args):
         filter_mute_floor=args.filter_mute_floor,
         filter_mute_edge_smooth_ms=args.filter_mute_edge_smooth_ms,
         object_names=args.object_name,
+        min_distance=args.min_distance,
+        max_distance=args.max_distance,
+        use_classification=args.use_classification,
+        max_signal_abs=args.max_signal_abs if args.use_classification else None,
+        audio_bandpass_low_hz=args.audio_bandpass_low_hz,
+        audio_bandpass_high_hz=args.audio_bandpass_high_hz,
     )
 
 
@@ -198,6 +223,12 @@ def build_dataset_with_split(root, args, split):
         filter_mute_floor=args.filter_mute_floor,
         filter_mute_edge_smooth_ms=args.filter_mute_edge_smooth_ms,
         object_names=args.object_name,
+        min_distance=args.min_distance,
+        max_distance=args.max_distance,
+        use_classification=args.use_classification,
+        max_signal_abs=args.max_signal_abs if args.use_classification else None,
+        audio_bandpass_low_hz=args.audio_bandpass_low_hz,
+        audio_bandpass_high_hz=args.audio_bandpass_high_hz,
     )
 
 
@@ -302,6 +333,8 @@ def visualize_doa_polar(pred, gt, idx, save_path):
 
 def main():
     args = parse_args()
+    if args.classification_only or args.gate_doa_by_pred_class:
+        args.use_classification = True
     device = torch.device(args.device if torch.cuda.is_available() and args.device.startswith("cuda") else "cpu")
     print(f"Using device: {device}")
 
@@ -322,6 +355,10 @@ def main():
 
     total_loss = 0.0
     n_samples = 0
+    class_correct = 0
+    class_total = 0
+    class_counts = torch.zeros(len(CLASS_NAMES), dtype=torch.long)
+    class_correct_counts = torch.zeros(len(CLASS_NAMES), dtype=torch.long)
     with torch.no_grad():
         for idx in indices:
             if idx < 0 or idx >= len(dataset):
@@ -332,11 +369,34 @@ def main():
             spectrogram = sample["spectrogram"].unsqueeze(0).to(device)
             gt_doa = sample["doa_map"].unsqueeze(0).to(device)
             gt_dist = sample["distant_map"].unsqueeze(0).to(device)
+            class_target = sample.get("class_label")
+            has_doa = sample.get("has_doa")
+            if class_target is not None:
+                class_target = class_target.unsqueeze(0).to(device)
+            if has_doa is not None:
+                has_doa = has_doa.unsqueeze(0).to(device)
 
-            logits_doa, logits_dist = model(spectrogram, depth)
+            outputs = model(spectrogram, depth)
+            logits_doa, logits_dist = outputs[:2]
+            class_logits = outputs[2] if len(outputs) > 2 else None
+            loss_mask = has_doa
+            if args.gate_doa_by_pred_class and class_logits is not None:
+                pred_signal = class_logits.argmax(dim=1) == 2
+                loss_mask = pred_signal if loss_mask is None else (loss_mask.bool() & pred_signal)
             pred_doa = torch.softmax(logits_doa, dim=1)
             pred_dist = torch.softmax(logits_dist, dim=1)
-            loss, loss_doa, loss_dist = combined_loss(logits_doa, logits_dist, gt_doa, gt_dist)
+            loss, loss_doa, loss_dist, loss_cls = combined_loss(
+                logits_doa,
+                logits_dist,
+                gt_doa,
+                gt_dist,
+                distance_weight=args.distance_weight,
+                class_logits=class_logits,
+                class_target=class_target,
+                classification_weight=args.classification_weight if args.use_classification else 0.0,
+                has_doa=loss_mask,
+                classification_only=args.classification_only,
+            )
             total_loss += loss.item()
             n_samples += 1
 
@@ -345,12 +405,29 @@ def main():
             pred_dist_np = pred_dist.squeeze(0).cpu().numpy()
             gt_dist_np = gt_dist.squeeze(0).cpu().numpy()
 
-            print(
-                f"idx={idx} loss={loss.item():.6f} doa_loss={loss_doa.item():.6f} dist_loss={loss_dist.item():.6f} "
+            class_text = ""
+            if class_logits is not None and class_target is not None:
+                pred_class = int(class_logits.argmax(dim=1).item())
+                gt_class = int(class_target.item())
+                class_total += 1
+                class_correct += int(pred_class == gt_class)
+                class_counts[gt_class] += 1
+                class_correct_counts[gt_class] += int(pred_class == gt_class)
+                class_text = (
+                    f" cls_loss={loss_cls.item():.6f} "
+                    f"gt_class={CLASS_NAMES[gt_class]} pred_class={CLASS_NAMES[pred_class]}"
+                )
+            doa_text = (
                 f"gt_doa_bin={int(gt_doa_np.argmax())} pred_doa_bin={int(pred_doa_np.argmax())} "
-                f"gt_dist_bin={int(gt_dist_np.argmax())} pred_dist_bin={int(pred_dist_np.argmax())} "
-                f"path={sample['path']}"
+                f"gt_dist_bin={int(gt_dist_np.argmax())} pred_dist_bin={int(pred_dist_np.argmax())}"
+                if bool(sample.get("has_doa", True))
+                else "no_doa_label"
             )
+            if args.print_samples:
+                print(
+                    f"idx={idx} loss={loss.item():.6f} doa_loss={loss_doa.item():.6f} dist_loss={loss_dist.item():.6f}"
+                    f"{class_text} {doa_text} path={sample['path']}"
+                )
             if args.save_vis:
                 if args.doa_vis == "polar":
                     visualize_doa_polar(pred_doa_np, gt_doa_np, idx, Path(args.vis_dir) / f"sample_{idx:06d}.png")
@@ -374,6 +451,13 @@ def main():
 
     if n_samples:
         print(f"Average loss on {n_samples} samples: {total_loss / n_samples:.6f}")
+    if class_total:
+        print(f"Classification accuracy: {class_correct / class_total:.6f} ({class_correct}/{class_total})")
+        for class_id, class_name in enumerate(CLASS_NAMES):
+            total = int(class_counts[class_id].item())
+            correct = int(class_correct_counts[class_id].item())
+            acc = correct / total if total else 0.0
+            print(f"  {class_name}: acc={acc:.6f} ({correct}/{total})")
     if args.save_vis:
         print(f"Visualizations saved to {args.vis_dir} and {args.vis_dist_dir}")
     else:

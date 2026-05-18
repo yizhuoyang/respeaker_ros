@@ -6,7 +6,7 @@ import torch
 from torch.utils.data import DataLoader, Subset, WeightedRandomSampler, random_split
 from torch.utils.tensorboard import SummaryWriter
 
-from dataloader.ssl_dataset import SingleStepDataset
+from dataloader.ssl_dataset import CLASS_NAMES, SingleStepDataset
 from network.audionet.ssl_net import SSLNet_DOA, SSLNet_depth_DOA
 from model_training.train_doa import train_one_epoch, validate
 
@@ -44,6 +44,19 @@ def parse_args():
     parser.add_argument("--audio-feat", default="ipd", choices=["ipd", "spec", "phase", "both", "gcc_phat_complex"])
     parser.add_argument("--audio-channels", default="1,2,3,4", help="Comma-separated wav channels to use.")
     parser.add_argument("--ipd-pairs", default="0-1,0-2,0-3,1-2,1-3,2-3")
+    parser.add_argument("--audio-bandpass-low-hz", type=float, default=0.0, help="Apply a train/test audio bandpass before feature extraction.")
+    parser.add_argument("--audio-bandpass-high-hz", type=float, default=0.0, help="Apply a train/test audio bandpass before feature extraction.")
+    parser.add_argument("--min-distance", type=float, default=None, help="Only load samples with distance_xy >= this value.")
+    parser.add_argument("--max-distance", type=float, default=None, help="Only load samples with distance_xy <= this value.")
+    parser.add_argument("--use-classification", action="store_true", help="Enable 3-class robot_noise/moving_sound/signal_static branch.")
+    parser.add_argument("--classification-only", action="store_true", help="Train only the 3-class classification branch.")
+    parser.add_argument("--freeze-classifier", action="store_true", help="Freeze classifier/backbone modules loaded from --checkpoint.")
+    parser.add_argument("--gate-doa-by-pred-class", action="store_true", help="Only compute DOA/distance loss when predicted class is signal_static.")
+    parser.add_argument("--classification-weight", type=float, default=1.0)
+    parser.add_argument("--distance-weight", type=float, default=0.5)
+    parser.add_argument("--max-signal-abs", type=float, default=0.06, help="With --use-classification, skip signal samples with selected-channel max abs above this value. Use <=0 to disable.")
+    parser.add_argument("--class-balanced-sampler", action="store_true", help="Balance training samples by classification label.")
+    parser.add_argument("--no-class-loss-weights", action="store_true", help="Disable inverse-frequency classification loss weights.")
     parser.add_argument("--use-denoise", action="store_true", help="Enable default dataloader denoising.")
     parser.add_argument("--denoise-noise", action="append", default=None, help="Backward-compatible stationary noise wav override. Can be repeated.")
     parser.add_argument("--denoise-stationary-noise", action="append", default=None, help="Always-present noise wavs, e.g. robot/lidar noise. Can be repeated.")
@@ -165,6 +178,12 @@ def build_dataset(root, args, is_train=False):
         time_mask_max_width=args.time_mask_max_width,
         time_mask_fill=args.time_mask_fill,
         object_names=args.object_name,
+        min_distance=args.min_distance,
+        max_distance=args.max_distance,
+        use_classification=args.use_classification,
+        max_signal_abs=args.max_signal_abs if args.use_classification else None,
+        audio_bandpass_low_hz=args.audio_bandpass_low_hz,
+        audio_bandpass_high_hz=args.audio_bandpass_high_hz,
     )
 
 
@@ -194,7 +213,10 @@ def build_loaders(args):
             train_dataset = Subset(train_source, train_indices)
             val_dataset = Subset(full_dataset, val_indices)
 
-    sampler = make_balanced_sampler(train_dataset) if args.balanced_sampler else None
+    if args.use_classification and args.class_balanced_sampler:
+        sampler = make_class_balanced_sampler(train_dataset)
+    else:
+        sampler = make_balanced_sampler(train_dataset) if args.balanced_sampler else None
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
@@ -258,6 +280,12 @@ def build_dataset_with_split(root, args, split, is_train=False):
         time_mask_max_width=args.time_mask_max_width,
         time_mask_fill=args.time_mask_fill,
         object_names=args.object_name,
+        min_distance=args.min_distance,
+        max_distance=args.max_distance,
+        use_classification=args.use_classification,
+        max_signal_abs=args.max_signal_abs if args.use_classification else None,
+        audio_bandpass_low_hz=args.audio_bandpass_low_hz,
+        audio_bandpass_high_hz=args.audio_bandpass_high_hz,
     )
 
 
@@ -302,11 +330,59 @@ def make_balanced_sampler(dataset, num_bins=12):
     return WeightedRandomSampler(weights=weights, num_samples=len(weights), replacement=True)
 
 
+def get_dataset_item_label(dataset, index):
+    if hasattr(dataset, "dataset"):
+        return dataset.dataset.get_class_label(dataset.indices[index])
+    return dataset.get_class_label(index)
+
+
+def make_class_balanced_sampler(dataset, num_classes=3):
+    labels = [get_dataset_item_label(dataset, index) for index in range(len(dataset))]
+    label_tensor = torch.tensor(labels, dtype=torch.long)
+    counts = torch.bincount(label_tensor, minlength=num_classes).float()
+    weights = 1.0 / counts[label_tensor].clamp_min(1.0)
+    return WeightedRandomSampler(weights=weights, num_samples=len(weights), replacement=True)
+
+
+def compute_class_weights(dataset, num_classes=3):
+    labels = [get_dataset_item_label(dataset, index) for index in range(len(dataset))]
+    counts = torch.bincount(torch.tensor(labels, dtype=torch.long), minlength=num_classes).float()
+    weights = counts.sum() / counts.clamp_min(1.0)
+    weights = weights / weights.mean().clamp_min(1e-8)
+    print("Class counts:", {CLASS_NAMES[i]: int(counts[i].item()) for i in range(num_classes)})
+    print("Class weights:", {CLASS_NAMES[i]: float(weights[i].item()) for i in range(num_classes)})
+    return weights
+
+
+def freeze_classifier_modules(model):
+    module_names = [
+        "spec_encoder",
+        "depth_encoder",
+        "film_gamma",
+        "film_beta",
+        "fusion_fc",
+        "class_head",
+    ]
+    frozen_params = 0
+    for name in module_names:
+        module = getattr(model, name, None)
+        if module is None:
+            continue
+        module.eval()
+        for param in module.parameters():
+            param.requires_grad = False
+            frozen_params += param.numel()
+    trainable_params = sum(param.numel() for param in model.parameters() if param.requires_grad)
+    print(f"Frozen classifier/gate params: {frozen_params}")
+    print(f"Trainable params after freeze: {trainable_params}")
+
+
 def build_model(args, audio_in_channels):
     if args.model == "audio":
         return SSLNet_DOA(
             use_compress=args.use_compress,
             audio_in_channels=audio_in_channels,
+            num_classes=3 if args.use_classification else 0,
         )
     return SSLNet_depth_DOA(
         use_compress=args.use_compress,
@@ -314,6 +390,7 @@ def build_model(args, audio_in_channels):
         pretrained_depth_encoder=not args.no_pretrained_depth,
         freeze_depth_encoder=args.freeze_depth,
         drop_depth_prob=0.1,
+        num_classes=3 if args.use_classification else 0,
     )
 
 
@@ -335,6 +412,8 @@ def load_checkpoint_if_needed(model, checkpoint, device):
 
 def main():
     args = parse_args()
+    if args.classification_only or args.freeze_classifier or args.gate_doa_by_pred_class:
+        args.use_classification = True
     os.makedirs(args.log_dir, exist_ok=True)
     os.makedirs(args.save_dir, exist_ok=True)
 
@@ -349,11 +428,20 @@ def main():
 
     train_dataset, val_dataset, train_loader, val_loader = build_loaders(args)
     print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
+    class_weights = None
+    if args.use_classification and not args.no_class_loss_weights:
+        class_weights = compute_class_weights(train_dataset)
 
     model = build_model(args, audio_in_channels).to(device)
     load_checkpoint_if_needed(model, args.checkpoint, device)
+    if args.freeze_classifier:
+        freeze_classifier_modules(model)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    optimizer = torch.optim.AdamW(
+        [param for param in model.parameters() if param.requires_grad],
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+    )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr * 0.05)
     writer = SummaryWriter(args.log_dir)
 
@@ -369,6 +457,13 @@ def main():
             epoch=epoch,
             writer=writer,
             global_step=global_step,
+            distance_weight=args.distance_weight,
+            classification_weight=args.classification_weight if args.use_classification else 0.0,
+            class_weights=class_weights,
+            classification_only=args.classification_only,
+            gate_doa_by_pred_class=args.gate_doa_by_pred_class,
+            signal_class_id=2,
+            freeze_classifier_eval=args.freeze_classifier,
         )
         val_loss = validate(
             model=model,
@@ -376,6 +471,12 @@ def main():
             device=device,
             epoch=epoch,
             writer=writer,
+            distance_weight=args.distance_weight,
+            classification_weight=args.classification_weight if args.use_classification else 0.0,
+            class_weights=class_weights,
+            classification_only=args.classification_only,
+            gate_doa_by_pred_class=args.gate_doa_by_pred_class,
+            signal_class_id=2,
         )
         # scheduler.step()
         print(f"Train loss: {train_loss:.6f} | Val loss: {val_loss:.6f}")

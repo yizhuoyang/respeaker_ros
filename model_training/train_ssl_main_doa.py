@@ -32,6 +32,17 @@ def parse_args():
     parser.add_argument("--audio-feat", default="ipd", choices=["ipd", "spec", "phase", "both", "gcc_phat_complex"])
     parser.add_argument("--audio-channels", default="1,2,3,4")
     parser.add_argument("--ipd-pairs", default="0-1,0-2,0-3,1-2,1-3,2-3")
+    parser.add_argument("--min-distance", type=float, default=None, help="Only load samples with distance_xy >= this value.")
+    parser.add_argument("--max-distance", type=float, default=None, help="Only load samples with distance_xy <= this value.")
+    parser.add_argument("--use-classification", action="store_true")
+    parser.add_argument("--classification-only", action="store_true")
+    parser.add_argument("--freeze-classifier", action="store_true")
+    parser.add_argument("--gate-doa-by-pred-class", action="store_true")
+    parser.add_argument("--classification-weight", type=float, default=1.0)
+    parser.add_argument("--distance-weight", type=float, default=0.5)
+    parser.add_argument("--max-signal-abs", type=float, default=0.06)
+    parser.add_argument("--class-balanced-sampler", action="store_true")
+    parser.add_argument("--no-class-loss-weights", action="store_true")
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--use-compress", action="store_true")
     parser.add_argument("--require-depth", action="store_true", help="By default missing depth is allowed for audio-only runs.")
@@ -133,6 +144,26 @@ def main():
 
     add_optional(cmd, "--object-name", args.object_name)
     add_optional(cmd, "--checkpoint", args.checkpoint)
+    add_optional(cmd, "--min-distance", args.min_distance)
+    add_optional(cmd, "--max-distance", args.max_distance)
+    if args.use_classification or args.classification_only or args.freeze_classifier or args.gate_doa_by_pred_class:
+        if args.classification_only:
+            cmd.append("--classification-only")
+        if args.freeze_classifier:
+            cmd.append("--freeze-classifier")
+        if args.gate_doa_by_pred_class:
+            cmd.append("--gate-doa-by-pred-class")
+        cmd.extend([
+            "--use-classification",
+            "--classification-weight",
+            str(args.classification_weight),
+            "--distance-weight",
+            str(args.distance_weight),
+            "--max-signal-abs",
+            str(args.max_signal_abs),
+        ])
+    add_flag(cmd, args.class_balanced_sampler, "--class-balanced-sampler")
+    add_flag(cmd, args.no_class_loss_weights, "--no-class-loss-weights")
 
     add_flag(cmd, not args.require_depth, "--allow-missing-depth")
     add_flag(cmd, args.use_compress, "--use-compress")

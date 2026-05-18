@@ -130,19 +130,15 @@ class SpecEncoderGlobal(nn.Module):
             prev_c = ch
 
         self.conv = nn.Sequential(*conv_blocks)
+        self.global_pool = nn.AdaptiveAvgPool2d((8, 3))
         flattened_dim = prev_c * 8 * 3
         self.fc = nn.Linear(flattened_dim, out_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
         B = x.size(0)
-        if self.use_compress:
-            assert x.shape[2] == 65 and x.shape[3] == 26, \
-                f"expect (B,2,65,26) when use_compress=True, got {tuple(x.shape)}"
-        else:
-            assert x.shape[2] == 257 and x.shape[3] == 101, \
-                f"expect (B,2,257,101) when use_compress=False, got {tuple(x.shape)}"
-        x = self.conv(x)          # -> (B, C_last, 8, 3)
+        x = self.conv(x)
+        x = self.global_pool(x)   # -> (B, C_last, 8, 3)
         x = x.view(B, -1)         # -> (B, C_last*8*3)
         x = self.fc(x)            # -> (B, out_dim)
         return x

@@ -1,4 +1,7 @@
 import os
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import torch
 from torch.utils.tensorboard import SummaryWriter

@@ -6,6 +6,32 @@ from scipy.io import wavfile
 from scipy.signal import butter, iirnotch, istft, medfilt, sosfiltfilt, stft, tf2sos
 
 
+def apply_audio_bandpass(audio, sample_rate, low_hz=None, high_hz=None, order=6):
+    """Apply the same zero-phase band filter to every audio channel.
+
+    The input is shaped (C, N). Using the same filter for every channel keeps
+    inter-channel timing/phase cues comparable for IPD-style features.
+    """
+    low_hz = float(low_hz or 0.0)
+    high_hz = float(high_hz or 0.0)
+    if low_hz <= 0 and high_hz <= 0:
+        return np.asarray(audio, dtype=np.float32)
+
+    nyquist = float(sample_rate) * 0.5
+    if high_hz <= 0 or high_hz >= nyquist:
+        high_hz = nyquist * 0.999
+    if low_hz <= 0:
+        sos = butter(order, high_hz / nyquist, btype="lowpass", output="sos")
+    elif low_hz >= high_hz:
+        raise ValueError(
+            f"Invalid audio bandpass range: low_hz={low_hz}, high_hz={high_hz}, "
+            f"nyquist={nyquist}"
+        )
+    else:
+        sos = butter(order, [low_hz / nyquist, high_hz / nyquist], btype="bandpass", output="sos")
+    return sosfiltfilt(sos, np.asarray(audio, dtype=np.float32), axis=-1).astype(np.float32)
+
+
 def compute_stft(signal, use_compress=True):
     n_fft = 512
     hop_length = 160

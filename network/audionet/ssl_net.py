@@ -13,8 +13,10 @@ class SSLNet_DOA(nn.Module):
         num_doa_bins=360,   # 新增：DOA 高斯的维度
         num_distance_bins=120,
         audio_in_channels=2,
+        num_classes=0,
     ):
         super().__init__()
+        self.num_classes = num_classes
 
         self.spec_encoder = SpecEncoderGlobal(
             in_channels=audio_in_channels,
@@ -38,6 +40,14 @@ class SSLNet_DOA(nn.Module):
             nn.Dropout(0.3),
             nn.Linear(128, num_distance_bins),
         )
+        self.class_head = None
+        if num_classes and num_classes > 0:
+            self.class_head = nn.Sequential(
+                nn.Linear(spec_out_dim, 128),
+                nn.ReLU(inplace=True),
+                nn.Dropout(0.3),
+                nn.Linear(128, num_classes),
+            )
 
 
     def forward(self, spectrogram, depth=None):
@@ -45,6 +55,9 @@ class SSLNet_DOA(nn.Module):
         
         doa_logits = self.doa_head(spec_feat)
         distance_logits = self.distance_head(spec_feat)
+        if self.class_head is not None:
+            class_logits = self.class_head(spec_feat)
+            return doa_logits, distance_logits, class_logits
         return doa_logits, distance_logits
 
 class SSLNet_depth_DOA(nn.Module):
@@ -60,10 +73,12 @@ class SSLNet_depth_DOA(nn.Module):
         num_distance_bins=120,
         audio_in_channels=2,
         freeze_depth_encoder=False,
+        num_classes=0,
     ):
         super().__init__()
 
         self.drop_depth_prob = drop_depth_prob
+        self.num_classes = num_classes
 
         # ===== Audio encoder =====
         self.spec_encoder = SpecEncoderGlobal(
@@ -112,6 +127,14 @@ class SSLNet_depth_DOA(nn.Module):
             nn.Dropout(0.3),
             nn.Linear(128, num_distance_bins),
         )
+        self.class_head = None
+        if num_classes and num_classes > 0:
+            self.class_head = nn.Sequential(
+                nn.Linear(fusion_out_dim, 128),
+                nn.ReLU(inplace=True),
+                nn.Dropout(0.3),
+                nn.Linear(128, num_classes),
+            )
 
     def forward(self, spectrogram, depth):
         """
@@ -140,5 +163,7 @@ class SSLNet_depth_DOA(nn.Module):
         # DOA head
         doa_logits = self.doa_head(out_feat)
         distance_logits = self.distance_head(out_feat)
+        if self.class_head is not None:
+            class_logits = self.class_head(out_feat)
+            return doa_logits, distance_logits, class_logits
         return doa_logits, distance_logits
-

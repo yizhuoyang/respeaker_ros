@@ -6,6 +6,9 @@ from pathlib import Path
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as Trans
 import torch
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import librosa
 import torch.utils.data as data
@@ -18,6 +21,7 @@ import soundfile as sf
 import scipy.io as sio
 
 from dataloader.utils import (
+    apply_audio_bandpass,
     filter_and_mute_motion_impacts,
     load_audio_wav,
     parse_float_list,
@@ -122,12 +126,16 @@ class SyncedDeepMusicDataset(Dataset):
         split="train",
         odom_name="lio_odom",
         object_names=None,
+        include_sequences=None,
+        exclude_sequences=None,
         audio_channels=(1, 2, 3, 4),
         sample_rate=16000,
         n_fft=512,
         hop_length=256,
         output_time_frames=64,
         min_freq_hz=2000.0,
+        audio_bandpass_low_hz=0.0,
+        audio_bandpass_high_hz=0.0,
         max_audio_abs=0.06,
         min_distance=None,
         max_distance=None,
@@ -156,12 +164,16 @@ class SyncedDeepMusicDataset(Dataset):
         self.split = split
         self.odom_name = odom_name
         self.object_names = parse_name_filter(object_names)
+        self.include_sequences = parse_name_filter(include_sequences)
+        self.exclude_sequences = parse_name_filter(exclude_sequences)
         self.audio_channels = tuple(audio_channels)
         self.sample_rate = sample_rate
         self.n_fft = n_fft
         self.hop_length = hop_length
         self.output_time_frames = output_time_frames
         self.min_freq_hz = min_freq_hz
+        self.audio_bandpass_low_hz = float(audio_bandpass_low_hz or 0.0)
+        self.audio_bandpass_high_hz = float(audio_bandpass_high_hz or 0.0)
         self.max_audio_abs = max_audio_abs
         self.min_distance = min_distance
         self.max_distance = max_distance
@@ -207,12 +219,16 @@ class SyncedDeepMusicDataset(Dataset):
             )
 
     def _collect_samples(self):
-        split_root = self.root / self.split
-        if not split_root.exists():
+        split_root = self.root / self.split if self.split else self.root
+        if self.split and not split_root.exists():
             raise RuntimeError(f"Missing dataset split: {split_root}")
 
         samples = []
         for seq_dir in sorted(path for path in split_root.iterdir() if path.is_dir()):
+            if self.include_sequences and seq_dir.name not in self.include_sequences:
+                continue
+            if self.exclude_sequences and seq_dir.name in self.exclude_sequences:
+                continue
             if self.object_names and not matches_object_filter(seq_dir.name, self.object_names):
                 continue
             audio_dir = seq_dir / "audio"
@@ -286,6 +302,14 @@ class SyncedDeepMusicDataset(Dataset):
                 motion_threshold=self.filter_mute_threshold,
                 mute_window_sec=self.filter_mute_window_sec,
                 mute_floor=self.filter_mute_floor,
+            )
+
+        if self.audio_bandpass_low_hz > 0 or self.audio_bandpass_high_hz > 0:
+            audio = apply_audio_bandpass(
+                audio,
+                sample_rate=sample_rate,
+                low_hz=self.audio_bandpass_low_hz,
+                high_hz=self.audio_bandpass_high_hz,
             )
 
         if self.noise_aug:
@@ -375,7 +399,11 @@ def resolve_mic_positions(
 ):
     if explicit_positions is not None:
         positions = np.asarray(explicit_positions, dtype=np.float32)
-    elif geometry in ("respeaker_v3", "circular"):
+    elif geometry == "respeaker_v3":
+        positions = make_respeaker_v3_positions(rotation_deg=rotation_deg)
+        if num_mics != 4:
+            raise RuntimeError(f"respeaker_v3 geometry expects 4 microphones, got {num_mics}")
+    elif geometry == "circular":
         positions = make_circular_mic_positions(num_mics, radius=radius, rotation_deg=rotation_deg)
     else:
         raise RuntimeError(f"Unknown mic geometry: {geometry}")
@@ -389,6 +417,17 @@ def resolve_mic_positions(
             raise RuntimeError(f"--mic-channel-order must be a permutation of 0..{num_mics - 1}, got {order}")
         positions = positions[order]
     return positions.astype(np.float32)
+
+
+def make_respeaker_v3_positions(rotation_deg=0.0):
+    half_side_m = 45.7 / 1000.0 / 2.0
+    positions = np.array([
+        [half_side_m, half_side_m, 0.0],
+        [-half_side_m, half_side_m, 0.0],
+        [-half_side_m, -half_side_m, 0.0],
+        [half_side_m, -half_side_m, 0.0],
+    ], dtype=np.float32)
+    return rotate_mic_positions(positions, rotation_deg)
 
 
 def make_circular_mic_positions(num_mics, radius, rotation_deg=0.0):

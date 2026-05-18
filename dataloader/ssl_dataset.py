@@ -6,6 +6,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 
 from dataloader.utils import (
+    apply_audio_bandpass,
     apply_motion_gated_spectral_gate,
     compute_spectrogram,
     compute_stft_phase_features,
@@ -45,6 +46,16 @@ DISTANCE_FIELDS = [
     "distance_xy",
     "distance_3d",
 ]
+
+CLASS_NAMES = [
+    "robot_noise",
+    "moving_sound",
+    "signal_static",
+]
+
+ROBOT_NOISE_CLASS = 0
+MOVING_SOUND_CLASS = 1
+SIGNAL_STATIC_CLASS = 2
 
 
 class SingleStepDataset(Dataset):
@@ -96,6 +107,12 @@ class SingleStepDataset(Dataset):
         time_mask_fill="zero",
         split=None,
         object_names=None,
+        min_distance=None,
+        max_distance=None,
+        use_classification=False,
+        max_signal_abs=None,
+        audio_bandpass_low_hz=0.0,
+        audio_bandpass_high_hz=0.0,
     ):
         self.root_dir = Path(root_dir)
         self.transform = transform
@@ -143,12 +160,31 @@ class SingleStepDataset(Dataset):
         self.time_mask_fill = time_mask_fill
         self.split = split
         self.object_names = parse_name_filter(object_names)
+        self.min_distance = min_distance
+        self.max_distance = max_distance
+        self.use_classification = use_classification
+        self.max_signal_abs = max_signal_abs
+        self.audio_bandpass_low_hz = float(audio_bandpass_low_hz or 0.0)
+        self.audio_bandpass_high_hz = float(audio_bandpass_high_hz or 0.0)
+        self.skipped_by_distance = 0
+        self.skipped_by_signal_amplitude = 0
         self._stationary_noise_profile_by_sample_rate = {}
         self._motion_noise_profile_by_sample_rate = {}
 
         self.file_list = self._collect_samples()
         if not self.file_list:
             raise RuntimeError(f"No synchronized ROS2 samples found under: {root_dir}")
+        if (self.min_distance is not None or self.max_distance is not None) and self.skipped_by_distance:
+            print(
+                f"[SingleStepDataset] split={self.split}: skipped "
+                f"{self.skipped_by_distance} samples outside distance range "
+                f"[{self.min_distance}, {self.max_distance}]"
+            )
+        if self.max_signal_abs and self.skipped_by_signal_amplitude:
+            print(
+                f"[SingleStepDataset] split={self.split}: skipped "
+                f"{self.skipped_by_signal_amplitude} signal samples with max_abs > {self.max_signal_abs}"
+            )
 
     def _collect_samples(self):
         samples = []
@@ -159,8 +195,14 @@ class SingleStepDataset(Dataset):
             doa_dir = dataset_dir / f"doa_{self.odom_name}"
             distance_dir = dataset_dir / f"distance_{self.odom_name}"
             odom_dir = dataset_dir / self.odom_name
+            class_label = class_label_from_sequence(dataset_dir.name)
+            is_noise = class_label in (ROBOT_NOISE_CLASS, MOVING_SOUND_CLASS)
 
-            if any(not path.exists() for path in [audio_dir, doa_dir, distance_dir]):
+            if not audio_dir.exists():
+                continue
+            if not self.use_classification and is_noise:
+                continue
+            if not is_noise and any(not path.exists() for path in [doa_dir, distance_dir]):
                 continue
 
             for audio_path in sorted(audio_dir.glob("*.wav"), key=lambda p: numeric_stem(p.stem)):
@@ -171,12 +213,25 @@ class SingleStepDataset(Dataset):
                 distance_path = distance_dir / f"{sample_id}.npy"
                 odom_path = odom_dir / f"{sample_id}.npy"
 
-                if not doa_path.exists() or not distance_path.exists():
+                has_doa = doa_path.exists() and distance_path.exists()
+                if not is_noise and not has_doa:
                     continue
-                if self.require_depth and depth_path is None:
+                if is_noise:
+                    doa_path = None
+                    distance_path = None
+                if self.require_depth and depth_path is None and not is_noise:
                     continue
-                if self.require_rgb and color_path is None:
+                if self.require_rgb and color_path is None and not is_noise:
                     continue
+                distance_xy = np.nan
+                if has_doa:
+                    distance_xy = self._load_distance_xy(doa_path, distance_path)
+                    if self._should_skip_by_distance(distance_xy):
+                        self.skipped_by_distance += 1
+                        continue
+                    if self._should_skip_signal_by_amplitude(audio_path):
+                        self.skipped_by_signal_amplitude += 1
+                        continue
 
                 samples.append({
                     "dataset_dir": dataset_dir,
@@ -186,9 +241,35 @@ class SingleStepDataset(Dataset):
                     "rgb": color_path,
                     "doa": doa_path,
                     "distance": distance_path,
+                    "distance_xy": distance_xy,
                     "odom": odom_path if odom_path.exists() else None,
+                    "class_label": class_label,
+                    "has_doa": has_doa,
                 })
         return samples
+
+    def _load_distance_xy(self, doa_path, distance_path):
+        distance_values = np.load(distance_path).astype(np.float32).reshape(-1)
+        if len(distance_values) > 0 and np.isfinite(distance_values[0]):
+            return float(distance_values[0])
+        doa_values = np.load(doa_path).astype(np.float32).reshape(-1)
+        doa = array_to_named_values(doa_values, DOA_FIELDS)
+        return float(doa.get("distance_xy", np.nan))
+
+    def _should_skip_by_distance(self, distance_xy):
+        if not np.isfinite(distance_xy):
+            return self.min_distance is not None or self.max_distance is not None
+        if self.min_distance is not None and distance_xy < self.min_distance:
+            return True
+        if self.max_distance is not None and distance_xy > self.max_distance:
+            return True
+        return False
+
+    def _should_skip_signal_by_amplitude(self, audio_path):
+        if self.max_signal_abs is None or self.max_signal_abs <= 0:
+            return False
+        audio, _ = load_audio_wav(audio_path, self.audio_channels)
+        return float(np.max(np.abs(audio))) > float(self.max_signal_abs)
 
     def _find_dataset_dirs(self):
         search_root = self.root_dir
@@ -206,6 +287,7 @@ class SingleStepDataset(Dataset):
             candidates = [
                 path for path in candidates
                 if matches_object_filter(path.name, self.object_names)
+                or (self.use_classification and is_noise_sequence(path.name))
             ]
 
         return candidates
@@ -219,6 +301,7 @@ class SingleStepDataset(Dataset):
         audio, sample_rate = load_audio_wav(item["audio"], self.audio_channels)
         audio = self._maybe_filter_mute_audio(audio, sample_rate)
         audio = self._maybe_denoise_audio(audio, sample_rate)
+        audio = self._maybe_apply_audio_bandpass(audio, sample_rate)
         depth = (
             load_image(item["depth"], normalize_rgb=False, image_size=self.image_size)
             if item["depth"] is not None
@@ -230,14 +313,27 @@ class SingleStepDataset(Dataset):
             else make_empty_rgb(depth)
         )
 
-        doa_values = np.load(item["doa"]).astype(np.float32)
-        distance_values = np.load(item["distance"]).astype(np.float32)
-        doa = array_to_named_values(doa_values, DOA_FIELDS)
-        distance = array_to_named_values(distance_values, DISTANCE_FIELDS)
+        has_doa = bool(item.get("has_doa", True))
+        if has_doa:
+            doa_values = np.load(item["doa"]).astype(np.float32)
+            distance_values = np.load(item["distance"]).astype(np.float32)
+            doa = array_to_named_values(doa_values, DOA_FIELDS)
+            distance = array_to_named_values(distance_values, DISTANCE_FIELDS)
 
-        yaw_signed_deg = float(doa["heading_target_yaw_signed_deg"])
-        distance_xy = float(distance.get("distance_xy", doa.get("distance_xy", 0.0)))
-        distance_3d = float(distance.get("distance_3d", doa.get("distance_3d", distance_xy)))
+            yaw_signed_deg = float(doa["heading_target_yaw_signed_deg"])
+            distance_xy = float(distance.get("distance_xy", doa.get("distance_xy", 0.0)))
+            distance_3d = float(distance.get("distance_3d", doa.get("distance_3d", distance_xy)))
+        else:
+            doa = {
+                "robot_x": 0.0,
+                "robot_y": 0.0,
+                "target_x": 0.0,
+                "target_y": 0.0,
+                "robot_heading_world_deg": 0.0,
+            }
+            yaw_signed_deg = 0.0
+            distance_xy = 0.0
+            distance_3d = 0.0
 
         if self.audio_feat == "spec":
             spectrogram = compute_spectrogram(audio, self.use_compress)
@@ -281,6 +377,8 @@ class SingleStepDataset(Dataset):
             "sample_id": item["sample_id"],
             "dataset_dir": str(item["dataset_dir"]),
             "sample_rate": sample_rate,
+            "class_label": torch.as_tensor(int(item.get("class_label", SIGNAL_STATIC_CLASS)), dtype=torch.long),
+            "has_doa": torch.as_tensor(has_doa, dtype=torch.bool),
         }
 
         if self.transform is not None:
@@ -363,6 +461,16 @@ class SingleStepDataset(Dataset):
             edge_smooth_ms=self.filter_mute_edge_smooth_ms,
         )
 
+    def _maybe_apply_audio_bandpass(self, audio, sample_rate):
+        if self.audio_bandpass_low_hz <= 0 and self.audio_bandpass_high_hz <= 0:
+            return audio
+        return apply_audio_bandpass(
+            audio,
+            sample_rate=sample_rate,
+            low_hz=self.audio_bandpass_low_hz,
+            high_hz=self.audio_bandpass_high_hz,
+        )
+
     def _maybe_apply_time_mask(self, spectrogram):
         if (
             not self.time_mask_enabled
@@ -405,9 +513,15 @@ class SingleStepDataset(Dataset):
 
     def get_yaw_deg(self, idx: int):
         item = self.file_list[idx]
+        if not item.get("has_doa", True):
+            return 0.0
         doa_values = np.load(item["doa"]).astype(np.float32)
         doa = array_to_named_values(doa_values, DOA_FIELDS)
         return float(doa["heading_target_yaw_signed_deg"])
+
+    def get_class_label(self, idx: int):
+        item = self.file_list[idx]
+        return int(item.get("class_label", SIGNAL_STATIC_CLASS))
 
 
 def array_to_named_values(values, fields):
@@ -439,6 +553,18 @@ def object_prefix(sequence_name):
 
 def matches_object_filter(sequence_name, object_names):
     return sequence_name in object_names or object_prefix(sequence_name) in object_names
+
+
+def class_label_from_sequence(sequence_name):
+    if sequence_name == "robot_noise":
+        return ROBOT_NOISE_CLASS
+    if sequence_name == "moving_sound":
+        return MOVING_SOUND_CLASS
+    return SIGNAL_STATIC_CLASS
+
+
+def is_noise_sequence(sequence_name):
+    return class_label_from_sequence(sequence_name) in (ROBOT_NOISE_CLASS, MOVING_SOUND_CLASS)
 
 
 def find_modality_file(directory, sample_id, suffixes):

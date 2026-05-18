@@ -19,14 +19,23 @@ def main():
     args = parse_args()
     device = torch.device(args.device if torch.cuda.is_available() and args.device.startswith("cuda") else "cpu")
     audio_channels = parse_int_tuple(args.audio_channels)
+    val_sequences = parse_name_set(args.val_sequences)
+    explicit_split = has_explicit_train_test_split(args.data_root)
+    if not explicit_split and not val_sequences:
+        raise RuntimeError(
+            "Flat dataset layout detected. Provide --val-sequences, for example --val-sequences clock7."
+        )
 
     train_dataset = SyncedDeepMusicDataset(
         root=args.data_root,
-        split="train",
+        split="train" if explicit_split else None,
         odom_name=args.odom,
         object_names=args.object_name,
+        exclude_sequences=val_sequences if not explicit_split else None,
         audio_channels=audio_channels,
         min_freq_hz=args.min_freq_hz,
+        audio_bandpass_low_hz=args.audio_bandpass_low_hz,
+        audio_bandpass_high_hz=args.audio_bandpass_high_hz,
         max_audio_abs=args.max_audio_abs,
         min_distance=args.min_distance,
         max_distance=args.max_distance,
@@ -49,11 +58,14 @@ def main():
     )
     val_dataset = SyncedDeepMusicDataset(
         root=args.data_root,
-        split="test",
+        split="test" if explicit_split else None,
         odom_name=args.odom,
         object_names=args.object_name,
+        include_sequences=val_sequences if not explicit_split else None,
         audio_channels=audio_channels,
         min_freq_hz=args.min_freq_hz,
+        audio_bandpass_low_hz=args.audio_bandpass_low_hz,
+        audio_bandpass_high_hz=args.audio_bandpass_high_hz,
         max_audio_abs=args.max_audio_abs,
         min_distance=args.min_distance,
         max_distance=args.max_distance,
@@ -105,7 +117,22 @@ def main():
 
     print(f"Device: {device}")
     print(f"Train samples: {len(train_dataset)}, Test samples: {len(val_dataset)}")
+    print(
+        "Dataset split: explicit train/test folders"
+        if explicit_split
+        else f"Dataset split: holdout sequences={sorted(val_sequences)}"
+    )
     print(f"Input channels: {input_channel}, audio_channels={audio_channels}")
+    print(
+        "Audio bandpass: "
+        f"{args.audio_bandpass_low_hz:g}-{args.audio_bandpass_high_hz:g} Hz"
+        if args.audio_bandpass_low_hz > 0 or args.audio_bandpass_high_hz > 0
+        else "Audio bandpass: disabled"
+    )
+    print(
+        f"Geometry augmentation: {args.geometry_aug}, "
+        f"step={args.geometry_aug_step_deg:g} deg"
+    )
     print(f"Save dir: {args.save_dir}")
 
     trainer = ModelTrainer(
@@ -127,9 +154,16 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Train DeepMusic_plus on this repo's synced_dataset.")
     parser.add_argument("--data-root", default="synced_dataset")
     parser.add_argument("--object-name", default=None, help="Optional object filter, e.g. clock,dryer,person,guitar.")
+    parser.add_argument(
+        "--val-sequences",
+        default=None,
+        help="For a flat dataset root, comma-separated held-out sequence dirs, e.g. clock7.",
+    )
     parser.add_argument("--odom", default="lio_odom", choices=["lio_odom", "lio_robo_odom"])
     parser.add_argument("--audio-channels", default="1,2,3,4")
     parser.add_argument("--min-freq-hz", type=float, default=2000.0, help="Use only STFT bins at or above this frequency.")
+    parser.add_argument("--audio-bandpass-low-hz", type=float, default=0.0, help="Apply waveform bandpass before STFT.")
+    parser.add_argument("--audio-bandpass-high-hz", type=float, default=0.0, help="Apply waveform bandpass before STFT.")
     parser.add_argument("--max-audio-abs", type=float, default=0.06, help="Skip samples whose selected-channel max abs amplitude is above this value. Use <=0 to disable.")
     parser.add_argument("--min-distance", type=float, default=None, help="Only load samples with distance_xy >= this value.")
     parser.add_argument("--max-distance", type=float, default=None, help="Only load samples with distance_xy <= this value.")
@@ -139,8 +173,8 @@ def parse_args():
         type=float,
         default=0.032,
         help=(
-            "Circular mic radius in meters. ReSpeaker Mic Array v3.0 board diameter is 70mm; "
-            "0.032m is a practical mic-center estimate and can be calibrated."
+            "Circular mic radius in meters when --mic-geometry circular is used. "
+            "Ignored for --mic-geometry respeaker_v3, which uses the 45.7mm square layout."
         ),
     )
     parser.add_argument("--mic-rotation-deg", type=float, default=0.0, help="Rotate mic geometry relative to robot/front frame.")
@@ -170,6 +204,17 @@ def parse_args():
 
 def parse_int_tuple(value):
     return tuple(int(item.strip()) for item in value.split(",") if item.strip())
+
+
+def parse_name_set(value):
+    if not value:
+        return set()
+    return {item.strip() for item in value.split(",") if item.strip()}
+
+
+def has_explicit_train_test_split(data_root):
+    root = Path(data_root)
+    return (root / "train").is_dir() and (root / "test").is_dir()
 
 
 if __name__ == "__main__":

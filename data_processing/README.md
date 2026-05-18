@@ -98,6 +98,14 @@ python data_processing/truncate_synced_dataset.py \
   --keep-through 120
 ```
 
+
+```bash
+python data_processing/truncate_synced_dataset.py \
+  --dataset synced_dataset/moving_sound \
+  --keep-through 137
+```
+
+
 这会保留：
 
 ```text
@@ -558,7 +566,7 @@ python test_doa.py \
   --vis-dist-dir vis_result_dist_clock2
 
 python data_processing/export_audio_from_bag.py \
-  --bag /media/kemove/T9/bag/new \
+  --bag /media/kemove/T9/bag/clock \
   --topic /respeaker/audio_raw \
   --out wav_exports
 
@@ -636,7 +644,7 @@ python data_processing/filter_distance_bin_samples.py \
   --dataset synced_dataset \
   --odom lio_odom \
   --min-distance 0.3 \
-  --max-distance 5.0 \
+  --max-distance 4.0 \
   --recursive \
   --dry-run
 ```
@@ -862,16 +870,78 @@ python model_training/test_deepmusic_synced.py \
 如果训练时使用了运动冲击抑制，测试时也要加同样的预处理：
 
 ```bash
-python model_training/test_deepmusic_synced.py \
-  --data-root synced_dataset \
-  --object-name clock \
-  --checkpoint weights/deepmusic_clock_aug/best_model \
-  --use-filter-mute-denoise \
-  --filter-mute-threshold 0.06 \
-  --filter-mute-window-sec 0.05 \
-  --filter-mute-floor 0.02 \
-  --batch-size 16 \
-  --save-csv reports/deepmusic_clock_test.csv
+python data_processing/sync_from_bag_and_audio.py \
+  --bag /media/kemove/T9/bag/new \
+  --audio /home/kemove/yyz/audio-nav/ws_col/audio_data/signal\
+  --output synced_dataset \
+  --topics color,depth,lio_odom \
+  --segment-sec 0.5 \
+  --hop-sec 0.2
+```
+
+
+```bash
+
+python data_processing/split_noise_audio.py \
+  --input-dir audio_data/noise \
+  --output-dir synced_dataset \
+  --segment-sec 0.5 \
+  --hop-sec 0.2 \
+  --overwrite
+
 ```
 
 输出会打印 spectrum MSE，以及 soft-argmax 和 peak-bin 两种角度误差。
+
+
+python main_doa.py \
+  --data-root synced_dataset \
+  --object-name clock \
+  --model audio \
+  --odom lio_odom \
+  --audio-feat spec \
+  --audio-channels 1,2,3,4 \
+  --allow-missing-depth \
+  --use-classification \
+  --freeze-classifier \
+  --classification-weight 0.0 \
+  --distance-weight 0.5 \
+  --max-signal-abs 0.06 \
+  --checkpoint weights/ssl_clock_cls_only/best_model.pth \
+  --epochs 80 \
+  --batch-size 64 \
+  --lr 1e-4 \
+  --save-dir weights/ssl_clock_doa_gated \
+  --log-dir runs/ssl_clock_doa_gated
+  --val-clocks clock2
+
+  python data_processing/infer_audio_class_labels.py \
+  --data-root synced_dataset \
+  --checkpoint weights/ssl_person_cls_only/best_model.pth \
+  --model audio \
+  --audio-feat spec \
+  --audio-channels 1,2,3,4 \
+  --output-dir-name class \
+  --overwrite \
+  --no-save-probs
+
+
+  0: robot_noise
+  1: moving_sound
+  2: signal_static
+
+  python test_doa.py \
+  --data-root synced_dataset \
+  --object-name clock \
+  --val-clocks clock7 \
+  --eval-split val \
+  --model audio \
+  --odom lio_odom \
+  --audio-feat ipd \
+  --audio-channels 1,2,3,4 \
+  --ipd-pairs 0-1,0-2,0-3,1-2,1-3,2-3 \
+  --audio-bandpass-low-hz 4000 \
+  --audio-bandpass-high-hz 6000 \
+  --allow-missing-depth \
+  --checkpoint weights/ssl_clock_4000_6000_ipd/last_model.pth \
+  --indices all 
