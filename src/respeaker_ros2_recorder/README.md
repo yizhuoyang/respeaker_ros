@@ -58,3 +58,15 @@ ros2 run respeaker_ros2_recorder export_audio_from_bag.py \
   --topic /respeaker/audio_raw \
   --out respeaker_audio.wav
 ```
+
+Batch export ROS 2 bags to WAV files. Output names include the first audio
+timestamp by default, for example `bag_name_1712345678900000000.wav`:
+
+```bash
+ros2 run respeaker_ros2_recorder batch_export_audio_from_bags.py \
+  --input-dir /media/kemove/T9/bag/clock \
+  --output-dir wav_exports \
+  --topic /respeaker/audio_raw
+```
+
+Use `--no-timestamp-in-name` to save files as `bag_name.wav`.

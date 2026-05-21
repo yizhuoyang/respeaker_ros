@@ -170,8 +170,16 @@ def main():
     )
     parser.add_argument(
         "--timestamp-in-name",
+        dest="timestamp_in_name",
         action="store_true",
-        help="Append the first audio message timestamp ns to each WAV filename.",
+        default=True,
+        help="Append the first audio message timestamp ns to each WAV filename. Enabled by default.",
+    )
+    parser.add_argument(
+        "--no-timestamp-in-name",
+        dest="timestamp_in_name",
+        action="store_false",
+        help="Do not append the first audio message timestamp ns to WAV filenames.",
     )
 
     args = parser.parse_args()
