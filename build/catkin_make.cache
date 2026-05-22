@@ -1,2 +1,0 @@
-respeaker_ros_recorder
--DPYTHON_EXECUTABLE=/home/kemove/anaconda3/envs/il/bin/python3 -DCATKIN_DEVEL_PREFIX=/home/kemove/yyz/audio-nav/respeaker_ros/devel -DCMAKE_INSTALL_PREFIX=/home/kemove/yyz/audio-nav/respeaker_ros/install -G Unix Makefiles

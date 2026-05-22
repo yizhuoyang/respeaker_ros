@@ -6,3 +6,4 @@ devel/
 *.bag
 *.wav
 wav_exports/
+data/

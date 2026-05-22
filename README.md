@@ -244,6 +244,20 @@ rosrun respeaker_ros_recorder batch_export_audio_from_bags.py \
   --bag-dir /media/kemove/T9/bag/bag_nav \
   --topic /respeaker/audio_raw \
   --keep-going
+
+
+python3 data_processing/generate_synced_dataset.py \
+  --wav-dir /home/kemove/yyz/audio-nav/respeaker_ros/wav_exports \
+  --bag-dir /media/kemove/T9/bag/bag_nav \
+  --out-dir data \
+  --image-topic /camera/color/image_raw \
+  --depth-topic /camera/depth/image_rect_raw \
+  --odom-topic /Odometry \
+  --segment-sec 1.0 \
+  --hop-sec 0.1 \
+  --max-delta-sec 0.05 \
+  --keep-going
+
 ```
 
 

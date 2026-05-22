@@ -1,8 +1,0 @@
-prefix=/home/kemove/yyz/audio-nav/respeaker_ros/install
-
-Name: respeaker_ros_recorder
-Description: Description of respeaker_ros_recorder
-Version: 0.0.0
-Cflags: -I${prefix}/include
-Libs: -L${prefix}/lib 
-Requires: rospy std_msgs message_runtime
