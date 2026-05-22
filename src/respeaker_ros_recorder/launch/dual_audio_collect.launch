@@ -1,0 +1,49 @@
+<launch>
+  <!-- Mic 1: default for a 2-channel microphone -->
+  <arg name="mic1_sample_rate" default="16000" />
+  <arg name="mic1_channels" default="2" />
+  <arg name="mic1_chunk_size" default="1600" />
+  <arg name="mic1_device_index" default="-1" />
+  <arg name="mic1_frame_id" default="mic1" />
+  <arg name="mic1_topic_name" default="/mic1/audio_raw" />
+
+  <!-- Mic 2: default for a 6-channel microphone -->
+  <arg name="mic2_sample_rate" default="16000" />
+  <arg name="mic2_channels" default="6" />
+  <arg name="mic2_chunk_size" default="1600" />
+  <arg name="mic2_device_index" default="-1" />
+  <arg name="mic2_frame_id" default="mic2" />
+  <arg name="mic2_topic_name" default="/mic2/audio_raw" />
+
+  <!-- Optional rosbag recording for both microphones -->
+  <arg name="record_bag" default="false" />
+  <arg name="bag_path" default="dual_audio" />
+
+  <node
+    pkg="respeaker_ros_recorder"
+    type="dual_audio_capture_node.py"
+    name="dual_audio_capture_node"
+    output="screen">
+    <param name="mic1_sample_rate" value="$(arg mic1_sample_rate)" />
+    <param name="mic1_channels" value="$(arg mic1_channels)" />
+    <param name="mic1_chunk_size" value="$(arg mic1_chunk_size)" />
+    <param name="mic1_device_index" value="$(arg mic1_device_index)" />
+    <param name="mic1_frame_id" value="$(arg mic1_frame_id)" />
+    <param name="mic1_topic_name" value="$(arg mic1_topic_name)" />
+
+    <param name="mic2_sample_rate" value="$(arg mic2_sample_rate)" />
+    <param name="mic2_channels" value="$(arg mic2_channels)" />
+    <param name="mic2_chunk_size" value="$(arg mic2_chunk_size)" />
+    <param name="mic2_device_index" value="$(arg mic2_device_index)" />
+    <param name="mic2_frame_id" value="$(arg mic2_frame_id)" />
+    <param name="mic2_topic_name" value="$(arg mic2_topic_name)" />
+  </node>
+
+  <node
+    if="$(arg record_bag)"
+    pkg="rosbag"
+    type="record"
+    name="dual_audio_bag"
+    output="screen"
+    args="-O $(arg bag_path) $(arg mic1_topic_name) $(arg mic2_topic_name)" />
+</launch>
