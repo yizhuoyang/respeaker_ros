@@ -1,6 +1,6 @@
 # CMake generated Testfile for 
 # Source directory: /usr/src/googletest
-# Build directory: /home/kemove/yyz/audio-nav/ws_col/build/gtest
+# Build directory: /home/kemove/yyz/audio-nav/respeaker_ros/build/gtest
 # 
 # This file includes the relevant testing commands required for 
 # testing this directory and lists subdirectories to be tested as well.

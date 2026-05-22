@@ -1,4 +1,4 @@
-prefix=/home/kemove/yyz/audio-nav/ws_col/install
+prefix=/home/kemove/yyz/audio-nav/respeaker_ros/install
 
 Name: respeaker_ros_recorder
 Description: Description of respeaker_ros_recorder

@@ -1,5 +1,5 @@
 file(REMOVE_RECURSE
-  "/home/kemove/yyz/audio-nav/ws_col/devel/share/common-lisp/ros/respeaker_ros_recorder/msg/AudioDataStamped.lisp"
+  "/home/kemove/yyz/audio-nav/respeaker_ros/devel/share/common-lisp/ros/respeaker_ros_recorder/msg/AudioDataStamped.lisp"
   "CMakeFiles/respeaker_ros_recorder_generate_messages_lisp"
 )
 

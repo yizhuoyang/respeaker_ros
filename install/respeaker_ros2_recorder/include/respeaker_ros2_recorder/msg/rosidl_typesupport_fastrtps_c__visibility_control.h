@@ -1,1 +1,0 @@
-/home/kemove/yyz/audio-nav/ws_col/build/respeaker_ros2_recorder/rosidl_typesupport_fastrtps_c/respeaker_ros2_recorder/msg/rosidl_typesupport_fastrtps_c__visibility_control.h

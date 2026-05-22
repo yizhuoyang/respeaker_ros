@@ -1,1 +1,0 @@
-/home/kemove/yyz/audio-nav/ws_col/src/respeaker_ros2_recorder/scripts/respeaker_multichannel_node.py

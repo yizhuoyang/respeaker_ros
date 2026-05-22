@@ -53,10 +53,10 @@ RM = /usr/local/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /home/kemove/yyz/audio-nav/ws_col/src
+CMAKE_SOURCE_DIR = /home/kemove/yyz/audio-nav/respeaker_ros/src
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /home/kemove/yyz/audio-nav/ws_col/build
+CMAKE_BINARY_DIR = /home/kemove/yyz/audio-nav/respeaker_ros/build
 
 # Utility rule file for respeaker_ros_recorder_genlisp.
 
@@ -74,10 +74,10 @@ respeaker_ros_recorder/CMakeFiles/respeaker_ros_recorder_genlisp.dir/build: resp
 .PHONY : respeaker_ros_recorder/CMakeFiles/respeaker_ros_recorder_genlisp.dir/build
 
 respeaker_ros_recorder/CMakeFiles/respeaker_ros_recorder_genlisp.dir/clean:
-	cd /home/kemove/yyz/audio-nav/ws_col/build/respeaker_ros_recorder && $(CMAKE_COMMAND) -P CMakeFiles/respeaker_ros_recorder_genlisp.dir/cmake_clean.cmake
+	cd /home/kemove/yyz/audio-nav/respeaker_ros/build/respeaker_ros_recorder && $(CMAKE_COMMAND) -P CMakeFiles/respeaker_ros_recorder_genlisp.dir/cmake_clean.cmake
 .PHONY : respeaker_ros_recorder/CMakeFiles/respeaker_ros_recorder_genlisp.dir/clean
 
 respeaker_ros_recorder/CMakeFiles/respeaker_ros_recorder_genlisp.dir/depend:
-	cd /home/kemove/yyz/audio-nav/ws_col/build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /home/kemove/yyz/audio-nav/ws_col/src /home/kemove/yyz/audio-nav/ws_col/src/respeaker_ros_recorder /home/kemove/yyz/audio-nav/ws_col/build /home/kemove/yyz/audio-nav/ws_col/build/respeaker_ros_recorder /home/kemove/yyz/audio-nav/ws_col/build/respeaker_ros_recorder/CMakeFiles/respeaker_ros_recorder_genlisp.dir/DependInfo.cmake --color=$(COLOR)
+	cd /home/kemove/yyz/audio-nav/respeaker_ros/build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /home/kemove/yyz/audio-nav/respeaker_ros/src /home/kemove/yyz/audio-nav/respeaker_ros/src/respeaker_ros_recorder /home/kemove/yyz/audio-nav/respeaker_ros/build /home/kemove/yyz/audio-nav/respeaker_ros/build/respeaker_ros_recorder /home/kemove/yyz/audio-nav/respeaker_ros/build/respeaker_ros_recorder/CMakeFiles/respeaker_ros_recorder_genlisp.dir/DependInfo.cmake --color=$(COLOR)
 .PHONY : respeaker_ros_recorder/CMakeFiles/respeaker_ros_recorder_genlisp.dir/depend
 

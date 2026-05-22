@@ -53,9 +53,11 @@ conda deactivate
 ```bash
 cd /home/kemove/yyz/audio-nav/ws_col
 source /opt/ros/noetic/setup.bash
-catkin_make
+catkin_make -DPYTHON_EXECUTABLE=/usr/bin/python3
 source devel/setup.bash
 ```
+
+这里显式指定 `PYTHON_EXECUTABLE`，避免 `catkin_make` 误用 conda 或其他 ROS 环境里的 Python。
 
 检查包是否能找到：
 
@@ -221,7 +223,7 @@ sudo apt install python3-numpy python3-soundfile
 ```bash
 cd /home/kemove/yyz/audio-nav/ws_col
 source /opt/ros/noetic/setup.bash
-catkin_make
+catkin_make -DPYTHON_EXECUTABLE=/home/kemove/anaconda3/envs/open-mmlab/bin/python3
 source devel/setup.bash
 
 rosrun respeaker_ros_recorder list_audio_devices.py
@@ -235,4 +237,13 @@ rosrun respeaker_ros_recorder export_audio_from_bag.py \
   --bag respeaker_audio.bag \
   --topic /respeaker/audio_raw \
   --out respeaker_audio.wav
+
+
+
+rosrun respeaker_ros_recorder batch_export_audio_from_bags.py \
+  --bag-dir /media/kemove/T9/bag/bag_nav \
+  --topic /respeaker/audio_raw \
+  --keep-going
 ```
+
+

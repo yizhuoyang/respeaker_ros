@@ -1,5 +1,5 @@
 file(REMOVE_RECURSE
-  "/home/kemove/yyz/audio-nav/ws_col/devel/share/gennodejs/ros/respeaker_ros_recorder/msg/AudioDataStamped.js"
+  "/home/kemove/yyz/audio-nav/respeaker_ros/devel/share/gennodejs/ros/respeaker_ros_recorder/msg/AudioDataStamped.js"
   "CMakeFiles/respeaker_ros_recorder_generate_messages_nodejs"
 )
 

@@ -1,1 +1,0 @@
-/home/kemove/yyz/audio-nav/ws_col/src/respeaker_ros2_recorder/scripts/batch_export_audio_from_bags.py

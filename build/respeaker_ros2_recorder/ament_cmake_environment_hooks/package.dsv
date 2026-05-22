@@ -1,4 +1,0 @@
-source;share/respeaker_ros2_recorder/local_setup.bash
-source;share/respeaker_ros2_recorder/local_setup.dsv
-source;share/respeaker_ros2_recorder/local_setup.sh
-source;share/respeaker_ros2_recorder/local_setup.zsh

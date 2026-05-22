@@ -1,1 +1,0 @@
-ament_cmake_symlink_install_targets("TARGET_FILES" "/home/kemove/yyz/audio-nav/ws_col/build/respeaker_ros2_recorder/librespeaker_ros2_recorder__rosidl_typesupport_fastrtps_cpp.so" "TARGETS" "respeaker_ros2_recorder__rosidl_typesupport_fastrtps_cpp" "ARCHIVE_DESTINATION" "lib" "LIBRARY_DESTINATION" "lib" "RUNTIME_DESTINATION" "bin")

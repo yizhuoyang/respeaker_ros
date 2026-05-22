@@ -1,8 +1,8 @@
-prefix=/home/kemove/yyz/audio-nav/ws_col/devel
+prefix=/home/kemove/yyz/audio-nav/respeaker_ros/devel
 
 Name: respeaker_ros_recorder
 Description: Description of respeaker_ros_recorder
 Version: 0.0.0
-Cflags: -I/home/kemove/yyz/audio-nav/ws_col/devel/include
+Cflags: -I/home/kemove/yyz/audio-nav/respeaker_ros/devel/include
 Libs: -L${prefix}/lib 
 Requires: rospy std_msgs message_runtime

@@ -1,1 +1,0 @@
-/home/kemove/yyz/audio-nav/ws_col/build/respeaker_ros2_recorder/ament_cmake_core/respeaker_ros2_recorderConfig-version.cmake

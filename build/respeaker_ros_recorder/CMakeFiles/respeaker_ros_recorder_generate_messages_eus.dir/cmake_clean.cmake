@@ -1,6 +1,6 @@
 file(REMOVE_RECURSE
-  "/home/kemove/yyz/audio-nav/ws_col/devel/share/roseus/ros/respeaker_ros_recorder/manifest.l"
-  "/home/kemove/yyz/audio-nav/ws_col/devel/share/roseus/ros/respeaker_ros_recorder/msg/AudioDataStamped.l"
+  "/home/kemove/yyz/audio-nav/respeaker_ros/devel/share/roseus/ros/respeaker_ros_recorder/manifest.l"
+  "/home/kemove/yyz/audio-nav/respeaker_ros/devel/share/roseus/ros/respeaker_ros_recorder/msg/AudioDataStamped.l"
   "CMakeFiles/respeaker_ros_recorder_generate_messages_eus"
 )
 
