@@ -165,7 +165,100 @@ rosrun respeaker_ros_recorder export_audio_from_bag.py \
 0,1,2,3,4,5
 ```
 
-## 7. 常用参数
+## 7. 双麦克风采集并录制 Bag
+
+`dual_audio_collect.launch` 会同时启动两个音频输入，并把两个 topic 一起录进同一个 bag。默认 topic：
+
+```text
+/mic1/audio_raw
+/mic2/audio_raw
+```
+
+先用下面命令确认两个麦克风的 PyAudio 设备编号：
+
+```bash
+rosrun respeaker_ros_recorder list_audio_devices.py
+```
+
+启动双麦克风采集并录制：
+
+```bash
+roslaunch respeaker_ros_recorder dual_audio_collect.launch \
+  mic1_device_index:=2 \
+  mic1_channels:=2 \
+  mic2_device_index:=3 \
+  mic2_channels:=6 \
+  record_bag:=true \
+  bag_path:=dual_audio
+```
+
+这会生成：
+
+```text
+dual_audio.bag
+```
+
+查看 bag 中是否包含两个音频 topic：
+
+```bash
+rosbag info dual_audio.bag
+```
+
+## 8. 双麦克风 Bag 导出两个 WAV
+
+从 `dual_audio_collect.launch` 录制的 bag 中一次导出两个音频：
+
+```bash
+rosrun respeaker_ros_recorder export_dual_audio_from_bag.py \
+  --bag dual_audio.bag \
+  --mic1-topic /mic1/audio_raw \
+  --mic2-topic /mic2/audio_raw \
+  --out-dir dual_wav
+```
+
+默认会生成：
+
+```text
+dual_wav/dual_audio_mic1.wav
+dual_wav/dual_audio_mic2.wav
+```
+
+也可以手动指定两个输出文件：
+
+```bash
+rosrun respeaker_ros_recorder export_dual_audio_from_bag.py \
+  --bag dual_audio.bag \
+  --mic1-out mic1.wav \
+  --mic2-out mic2.wav
+```
+
+如果只想导出指定通道，可以分别给两个麦克风设置通道编号：
+
+```bash
+rosrun respeaker_ros_recorder export_dual_audio_from_bag.py \
+  --bag dual_audio.bag \
+  --mic1-channels 0,1 \
+  --mic2-channels 0,1,2,3,4,5 \
+  --out-dir dual_wav
+```
+
+批量导出一个目录下的 dual bag：
+
+```bash
+rosrun respeaker_ros_recorder export_dual_audio_from_bag.py \
+  --bag-dir /media/kemove/T9/bag/dual_bag_nav \
+  --out-dir /media/kemove/T9/bag/dual_wav_exports \
+  --keep-going
+```
+
+批量导出默认会为每个 bag 生成：
+
+```text
+<bag-name>_mic1.wav
+<bag-name>_mic2.wav
+```
+
+## 9. 常用参数
 
 ```text
 sample_rate  默认 16000
@@ -178,7 +271,25 @@ record_bag   true/false，是否同时录 bag
 bag_path     bag 输出文件名前缀
 ```
 
-## 8. 常见问题
+双麦克风参数：
+
+```text
+mic1_sample_rate   默认 16000
+mic1_channels      默认 2
+mic1_chunk_size    默认 1600
+mic1_device_index  默认 -1
+mic1_frame_id      默认 mic1
+mic1_topic_name    默认 /mic1/audio_raw
+
+mic2_sample_rate   默认 16000
+mic2_channels      默认 6
+mic2_chunk_size    默认 1600
+mic2_device_index  默认 -1
+mic2_frame_id      默认 mic2
+mic2_topic_name    默认 /mic2/audio_raw
+```
+
+## 10. 常见问题
 
 包找不到：
 
@@ -218,7 +329,7 @@ python3 -c "import numpy, soundfile, rosbag; print('ok')"
 sudo apt install python3-numpy python3-soundfile
 ```
 
-## 9. 最短完整流程
+## 11. 最短完整流程
 
 ```bash
 cd /home/kemove/yyz/audio-nav/ws_col
@@ -246,4 +357,28 @@ rosrun respeaker_ros_recorder batch_export_audio_from_bags.py \
   --keep-going
 ```
 
+双麦克风最短流程：
 
+```bash
+rosrun respeaker_ros_recorder list_audio_devices.py
+
+roslaunch respeaker_ros_recorder dual_audio_collect.launch \
+  mic1_device_index:=2 \
+  mic1_channels:=2 \
+  mic2_device_index:=3 \
+  mic2_channels:=6 \
+  record_bag:=true \
+  bag_path:=dual_audio
+
+rosrun respeaker_ros_recorder export_dual_audio_from_bag.py \
+  --bag dual_audio.bag \
+  --out-dir dual_wav
+```
+
+批量导出 dual bag：
+
+```bash
+rosrun respeaker_ros_recorder export_dual_audio_from_bag.py \
+  --bag-dir /media/kemove/T9/bag/dual_bag_nav \
+  --keep-going
+```
