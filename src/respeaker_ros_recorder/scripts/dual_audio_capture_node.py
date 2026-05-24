@@ -13,6 +13,10 @@ def normalize_device_index(device_index):
     return None if device_index < 0 else device_index
 
 
+def format_device_index(device_index):
+    return "default" if device_index is None else str(device_index)
+
+
 class AudioCaptureWorker:
     def __init__(
         self,
@@ -39,22 +43,56 @@ class AudioCaptureWorker:
         self.thread = None
         self.stop_event = threading.Event()
 
+    def get_device_info(self):
+        if self.device_index is None:
+            return self.pa.get_default_input_device_info()
+
+        return self.pa.get_device_info_by_index(self.device_index)
+
     def start(self):
         rospy.loginfo("[%s] opening audio stream", self.name)
         rospy.loginfo("[%s] sample_rate: %s", self.name, self.sample_rate)
         rospy.loginfo("[%s] channels: %s", self.name, self.channels)
         rospy.loginfo("[%s] chunk_size: %s", self.name, self.chunk_size)
-        rospy.loginfo("[%s] device_index: %s", self.name, self.device_index)
+        rospy.loginfo("[%s] device_index: %s", self.name, format_device_index(self.device_index))
         rospy.loginfo("[%s] topic_name: %s", self.name, self.topic_name)
 
-        self.stream = self.pa.open(
-            format=pyaudio.paInt16,
-            channels=self.channels,
-            rate=self.sample_rate,
-            input=True,
-            input_device_index=self.device_index,
-            frames_per_buffer=self.chunk_size,
-        )
+        try:
+            device_info = self.get_device_info()
+            device_name = device_info.get("name", "unknown")
+            max_inputs = int(device_info.get("maxInputChannels", 0))
+            default_rate = device_info.get("defaultSampleRate", "unknown")
+            rospy.loginfo("[%s] device_name: %s", self.name, device_name)
+            rospy.loginfo("[%s] max_input_channels: %s", self.name, max_inputs)
+            rospy.loginfo("[%s] default_sample_rate: %s", self.name, default_rate)
+
+            if max_inputs and self.channels > max_inputs:
+                rospy.logwarn(
+                    "[%s] requested channels %s exceeds device maxInputChannels %s",
+                    self.name,
+                    self.channels,
+                    max_inputs,
+                )
+
+            self.stream = self.pa.open(
+                format=pyaudio.paInt16,
+                channels=self.channels,
+                rate=self.sample_rate,
+                input=True,
+                input_device_index=self.device_index,
+                frames_per_buffer=self.chunk_size,
+            )
+        except Exception as exc:
+            rospy.logerr(
+                "[%s] failed to open audio stream: %s. Check device_index, channels, "
+                "and sample_rate. If this is 'Invalid sample rate', try setting "
+                "%s_sample_rate to the device defaultSampleRate from "
+                "`rosrun respeaker_ros_recorder list_audio_devices.py`.",
+                self.name,
+                exc,
+                self.name,
+            )
+            raise
 
         self.thread = threading.Thread(target=self.run, name=self.name)
         self.thread.daemon = True

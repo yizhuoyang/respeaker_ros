@@ -185,8 +185,10 @@ rosrun respeaker_ros_recorder list_audio_devices.py
 ```bash
 roslaunch respeaker_ros_recorder dual_audio_collect.launch \
   mic1_device_index:=2 \
+  mic1_sample_rate:=16000 \
   mic1_channels:=2 \
   mic2_device_index:=3 \
+  mic2_sample_rate:=16000 \
   mic2_channels:=6 \
   record_bag:=true \
   bag_path:=dual_audio
@@ -317,6 +319,32 @@ rosrun respeaker_ros_recorder list_audio_devices.py
 
 确认 `device_index`、`channels`、`sample_rate` 和实际设备一致。
 
+双麦克风启动时报 `OSError: [Errno -9997] Invalid sample rate`：
+
+```text
+OSError: [Errno -9997] Invalid sample rate
+```
+
+说明对应的 `mic*_device_index` 不支持当前 `mic*_sample_rate`。先查看设备默认采样率：
+
+```bash
+rosrun respeaker_ros_recorder list_audio_devices.py
+```
+
+输出中的 `defaultSampleRate` 如果是 `48000.0`，启动时就给这个麦克风显式设置为 `48000`：
+
+```bash
+roslaunch respeaker_ros_recorder dual_audio_collect.launch \
+  mic1_device_index:=1 \
+  mic1_sample_rate:=48000 \
+  mic1_channels:=2 \
+  mic2_device_index:=0 \
+  mic2_sample_rate:=16000 \
+  mic2_channels:=6
+```
+
+如果 mic2 也报同样错误，就把 `mic2_sample_rate` 也改成它自己的 `defaultSampleRate`。
+
 导出 WAV 失败：
 
 ```bash
@@ -364,8 +392,10 @@ rosrun respeaker_ros_recorder list_audio_devices.py
 
 roslaunch respeaker_ros_recorder dual_audio_collect.launch \
   mic1_device_index:=2 \
+  mic1_sample_rate:=16000 \
   mic1_channels:=2 \
   mic2_device_index:=3 \
+  mic2_sample_rate:=16000 \
   mic2_channels:=6 \
   record_bag:=true \
   bag_path:=dual_audio
@@ -381,4 +411,14 @@ rosrun respeaker_ros_recorder export_dual_audio_from_bag.py \
 rosrun respeaker_ros_recorder export_dual_audio_from_bag.py \
   --bag-dir /media/kemove/T9/bag/dual_bag_nav \
   --keep-going
+
+
+
+roslaunch respeaker_ros_recorder dual_audio_collect.launch \
+  mic1_device_index:=6 \
+  mic1_sample_rate:=48000 \
+  mic1_channels:=2 \
+  mic2_device_index:=0 \
+  mic2_sample_rate:=16000 \
+  mic2_channels:=7
 ```
