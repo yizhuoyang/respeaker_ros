@@ -43,13 +43,18 @@ class AudioVisualDoaDataset(Dataset):
         audio_feat=None,
         use_compress=True,
         ipd_pairs=((0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)),
+        ipd_freq_min=None,
+        ipd_freq_max=None,
         depth_scale=1000.0,
+        depth_max_m=10.0,
         doa_num_bins=360,
         doa_sigma_deg=3.0,
         distance_num_bins=120,
         distance_min=0.0,
         distance_max=6.0,
         distance_sigma=0.08,
+        min_distance=0.0,
+        sample_stride=1,
     ):
         self.root_dir = Path(root_dir)
         self.transform = transform
@@ -60,13 +65,18 @@ class AudioVisualDoaDataset(Dataset):
         self.audio_feat = audio_feat
         self.use_compress = use_compress
         self.ipd_pairs = parse_channel_pairs(ipd_pairs)
+        self.ipd_freq_min = None if ipd_freq_min is None else float(ipd_freq_min)
+        self.ipd_freq_max = None if ipd_freq_max is None else float(ipd_freq_max)
         self.depth_scale = float(depth_scale)
+        self.depth_max_m = None if depth_max_m is None else float(depth_max_m)
         self.doa_num_bins = int(doa_num_bins)
         self.doa_sigma_deg = float(doa_sigma_deg)
         self.distance_num_bins = int(distance_num_bins)
         self.distance_min = float(distance_min)
         self.distance_max = float(distance_max)
         self.distance_sigma = float(distance_sigma)
+        self.min_distance = float(min_distance)
+        self.sample_stride = max(int(sample_stride), 1)
 
         self.file_list = self._collect_samples()
         if not self.file_list:
@@ -83,13 +93,18 @@ class AudioVisualDoaDataset(Dataset):
             if not audio_dir.exists() or not doa_dir.exists():
                 continue
 
-            for audio_path in sorted(audio_dir.glob("*.wav"), key=lambda p: numeric_stem(p.stem)):
+            audio_paths = sorted(audio_dir.glob("*.wav"), key=lambda p: numeric_stem(p.stem))
+            for local_index, audio_path in enumerate(audio_paths):
+                if local_index % self.sample_stride != 0:
+                    continue
                 sample_id = audio_path.stem
                 image_path = find_modality_file(image_dir, sample_id, [".png", ".jpg", ".jpeg", ".npy"])
                 depth_path = find_modality_file(depth_dir, sample_id, [".png", ".npy"])
                 doa_path = doa_dir / f"{sample_id}.npy"
 
                 if not doa_path.exists():
+                    continue
+                if not self._is_valid_distance(doa_path):
                     continue
                 if self.require_image and image_path is None:
                     continue
@@ -109,10 +124,22 @@ class AudioVisualDoaDataset(Dataset):
 
         return samples
 
+    def _is_valid_distance(self, doa_path):
+        if self.min_distance <= 0.0:
+            return True
+        doa_values = np.load(doa_path).astype(np.float32)
+        if doa_values.shape[0] <= 5:
+            return False
+        return float(doa_values[5]) >= self.min_distance
+
     def _find_dataset_dirs(self):
         if (self.root_dir / "audio").exists():
             return [self.root_dir]
-        return sorted(path for path in self.root_dir.iterdir() if path.is_dir())
+        return sorted(
+            path
+            for path in self.root_dir.rglob("*")
+            if path.is_dir() and (path / "audio").exists() and (path / "doa").exists()
+        )
 
     def __len__(self):
         return len(self.file_list)
@@ -127,7 +154,12 @@ class AudioVisualDoaDataset(Dataset):
             else make_empty_image(self.image_size)
         )
         depth = (
-            load_depth(item["depth"], image_size=self.image_size, depth_scale=self.depth_scale)
+            load_depth(
+                item["depth"],
+                image_size=self.image_size,
+                depth_scale=self.depth_scale,
+                depth_max_m=self.depth_max_m,
+            )
             if item["depth"] is not None
             else make_empty_depth(self.image_size)
         )
@@ -171,6 +203,9 @@ class AudioVisualDoaDataset(Dataset):
                     mode=self.audio_feat,
                     use_compress=self.use_compress,
                     pairs=self.ipd_pairs,
+                    sample_rate=sample_rate,
+                    freq_min=self.ipd_freq_min,
+                    freq_max=self.ipd_freq_max,
                 ),
                 dtype=torch.float32,
             ).permute(2, 0, 1)
@@ -212,8 +247,8 @@ def make_doa_gaussian_from_azimuth_rad(azimuth_rad, num_bins=360, sigma_deg=3.0)
     diff_deg = (angles_deg - angle_deg + 180.0) % 360.0 - 180.0
     sigma_deg = max(float(sigma_deg), 1e-6)
     probs = np.exp(-0.5 * (diff_deg / sigma_deg) ** 2)
-    if probs.sum() > 0.0:
-        probs = probs / probs.sum()
+    if probs.max() > 0.0:
+        probs = probs / probs.max()
     return probs.astype(np.float32)
 
 
@@ -221,8 +256,8 @@ def make_distance_gaussian_1d(distance_m, num_bins=120, r_min=0.0, r_max=6.0, si
     r_axis = np.linspace(float(r_min), float(r_max), int(num_bins), dtype=np.float32)
     sigma = max(float(sigma), 1e-6)
     probs = np.exp(-0.5 * ((r_axis - float(distance_m)) / sigma) ** 2)
-    if probs.sum() > 0.0:
-        probs = probs / probs.sum()
+    if probs.max() > 0.0:
+        probs = probs / probs.max()
     return probs.astype(np.float32)
 
 
@@ -283,12 +318,17 @@ def load_image(path, normalize_rgb=True, image_size=None):
     return image
 
 
-def load_depth(path, image_size=None, depth_scale=1000.0):
+def load_depth(path, image_size=None, depth_scale=1000.0, depth_max_m=10.0):
     depth = load_image(path, normalize_rgb=False, image_size=None)
     if depth.ndim == 3:
         depth = depth[:, :, 0]
     if depth.max() > 100.0:
         depth = depth / float(depth_scale)
+    if depth_max_m is not None and depth_max_m > 0.0:
+        depth = np.asarray(depth, dtype=np.float32)
+        invalid = ~np.isfinite(depth) | (depth <= 0.0) | (depth > float(depth_max_m))
+        depth[invalid] = 0.0
+        depth = np.clip(depth, 0.0, float(depth_max_m)) / float(depth_max_m)
     if image_size is not None:
         depth = resize_image(depth, image_size, normalize_rgb=False)
     return depth.astype(np.float32)
@@ -340,10 +380,25 @@ def parse_channel_pairs(value):
     return tuple(tuple(pair) for pair in value)
 
 
-def compute_audio_feature(audio, mode="ipd", use_compress=True, pairs=((0, 1),)):
+def compute_audio_feature(
+    audio,
+    mode="ipd",
+    use_compress=True,
+    pairs=((0, 1),),
+    sample_rate=None,
+    freq_min=None,
+    freq_max=None,
+):
     if mode == "spec":
         return compute_spectrogram(audio, use_compress=use_compress)
-    return compute_stft_phase_features(audio, mode=mode, pairs=pairs)
+    return compute_stft_phase_features(
+        audio,
+        mode=mode,
+        pairs=pairs,
+        sample_rate=sample_rate,
+        freq_min=freq_min,
+        freq_max=freq_max,
+    )
 
 
 def compute_spectrogram(audio, use_compress=True):
@@ -364,6 +419,9 @@ def compute_stft_phase_features(
     audio,
     mode="ipd",
     pairs=((0, 1),),
+    sample_rate=None,
+    freq_min=None,
+    freq_max=None,
     eps=1e-8,
 ):
     import librosa
@@ -372,7 +430,20 @@ def compute_stft_phase_features(
     if audio.ndim != 2:
         raise RuntimeError(f"Expected audio shape (C, N), got {audio.shape}")
 
-    spectra = [librosa.stft(audio[channel], n_fft=512, hop_length=160, win_length=400) for channel in range(audio.shape[0])]
+    n_fft = 512
+    spectra = [librosa.stft(audio[channel], n_fft=n_fft, hop_length=160, win_length=400) for channel in range(audio.shape[0])]
+
+    freq_mask = make_frequency_mask(
+        num_freq_bins=spectra[0].shape[0],
+        sample_rate=sample_rate,
+        n_fft=n_fft,
+        freq_min=freq_min,
+        freq_max=freq_max,
+        librosa_module=librosa,
+    )
+    if freq_mask is not None:
+        spectra = [spec[freq_mask, :] for spec in spectra]
+
     phases = [np.angle(spec) for spec in spectra]
 
     phase_feats = []
@@ -404,6 +475,32 @@ def compute_stft_phase_features(
         return np.stack(pair_feats, axis=-1).astype(np.float32)
 
     raise ValueError(f"Unknown audio feature mode: {mode}")
+
+
+def make_frequency_mask(num_freq_bins, sample_rate, n_fft, freq_min=None, freq_max=None, librosa_module=None):
+    if freq_min is None and freq_max is None:
+        return None
+    if sample_rate is None:
+        raise ValueError("sample_rate is required when using IPD frequency band filtering")
+
+    librosa = librosa_module
+    if librosa is None:
+        import librosa
+
+    freqs = librosa.fft_frequencies(sr=sample_rate, n_fft=n_fft)
+    freqs = freqs[:num_freq_bins]
+
+    mask = np.ones_like(freqs, dtype=bool)
+    if freq_min is not None:
+        mask &= freqs >= float(freq_min)
+    if freq_max is not None:
+        mask &= freqs <= float(freq_max)
+    if not mask.any():
+        raise ValueError(
+            f"Empty frequency band: freq_min={freq_min}, freq_max={freq_max}, "
+            f"sample_rate={sample_rate}, n_fft={n_fft}"
+        )
+    return mask
 
 
 def block_reduce_mean(array, block_size):

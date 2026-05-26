@@ -268,7 +268,7 @@ def process_pair(wav_path, bag_path, out_root, args):
         end_sample = start_sample + segment_samples
         audio_start = audio_start_time + float(start_sample) / float(sample_rate)
         audio_end = audio_start_time + float(end_sample) / float(sample_rate)
-        sync_time = (audio_start + audio_end) * 0.5
+        sync_time = audio_end
 
         image_time, image_msg, image_delta = nearest_message(
             topic_data["image"], sync_time, args.max_delta_sec
@@ -329,7 +329,10 @@ def process_pair(wav_path, bag_path, out_root, args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate synchronized audio/image/depth/odom samples from WAV files and ROS1 bags."
+        description=(
+            "Generate synchronized audio/image/depth/odom samples from WAV files and ROS1 bags. "
+            "Each audio segment is matched to other modalities at the segment end timestamp."
+        )
     )
     parser.add_argument("--wav-dir", required=True, help="Directory containing exported wav files")
     parser.add_argument("--bag-dir", required=True, help="Directory containing matching .bag files")

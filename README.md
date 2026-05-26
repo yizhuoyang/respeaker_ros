@@ -258,6 +258,40 @@ python3 data_processing/generate_synced_dataset.py \
   --max-delta-sec 0.05 \
   --keep-going
 
+python3 main_audio_visual_doa.py \
+  --train-root data/train \
+  --val-root data/test \
+  --model audio \
+  --audio-feat ipd \
+  --audio-channels 1234 \
+  --ipd-freq-min 300 \
+  --ipd-freq-max 3400 \
+  --dist-loss-weight 0.5 \
+  --min-distance 0.3 \
+  --sample-stride 5 \
+  --depth-max-m 10.0 \
+  --audio-feat-dim 128 \
+  --fusion-dim 128 \
+  --dropout 0.3 \
+  --weight-decay 1e-4 \
+  --spec-augment \
+  --freq-mask-param 8 \
+  --time-mask-param 12 \
+  --feature-noise-std 0.02 \
+  --epochs 80 \
+  --batch-size 16 \
+  --device cuda:0
+
+python3 data_processing/traditional_doa_gcc_phat.py \
+  --data-root data/test \
+  --audio-channels 1234 \
+  --geometry square \
+  --spacing 0.0457 \
+  --freq-min 300 \
+  --freq-max 3400 \
+  --fit-offset \
+  --min-distance 0.3 \
+  --out-csv traditional_doa_results.csv
+
+
 ```
-
-
