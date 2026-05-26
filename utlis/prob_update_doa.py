@@ -6,12 +6,6 @@ try:
 except Exception:
     _gaussian_filter = None
 
-try:
-    import matplotlib.pyplot as plt
-except Exception:
-    plt = None
-
-
 def align_for_occ(P, mode="180"):
     """
     只用于显示/叠加，不改变 P 的世界语义。
@@ -124,7 +118,9 @@ def entropy_confidence(p, w_min=0.2):
 
 
 def save_map_png(path, P, bounds, agent_x, agent_z, heading, est=None, title=""):
-    if plt is None:
+    try:
+        import matplotlib.pyplot as plt
+    except Exception:
         return
     x_min, x_max, z_min, z_max = bounds
     extent = [x_min, x_max, z_min, z_max]

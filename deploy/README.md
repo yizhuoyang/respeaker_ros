@@ -13,6 +13,8 @@ deploy/
 ├── ros1_sslnet_visualizer.py   # ROS1 在线 matplotlib 可视化节点
 ├── ros1_sslnet_rviz_markers.py # 在 RViz/LiDAR 点云中叠加预测 marker
 ├── ros1_livox_custom_to_pointcloud2.py # Livox CustomMsg 转 RViz 点云
+├── ros1_sslnet_audio_map_fusion.py # 结合 odom 维护全局 audio map
+├── ros1_sslnet_fake_prediction.py # 无模型时模拟 noisy DOA/distance 输出
 └── README.md                    # 本使用说明
 ```
 
@@ -25,6 +27,8 @@ deploy/
 | `ros1_sslnet_visualizer.py` | 订阅推理输出，以极坐标、概率曲线和俯视图实时展示结果 | 需要观察模型输出时运行 |
 | `ros1_sslnet_rviz_markers.py` | 将预测转为 RViz 箭头、点、距离圆及分布 marker | 与 LiDAR 点云叠加验证时运行 |
 | `ros1_livox_custom_to_pointcloud2.py` | 将运行中的 Livox `CustomMsg` 转为 `PointCloud2` | 不能重启 LiDAR 驱动时运行 |
+| `ros1_sslnet_audio_map_fusion.py` | 使用 odom 与每帧分布累计全局 audio map，发布全局声源 argmax | 机器人移动时定位持续声源 |
+| `ros1_sslnet_fake_prediction.py` | 以轨迹最后一个位置为假声源，生成带噪声的 DOA/distance 分布 | 没有训练模型时验证融合流程 |
 
 ## 推理流程
 
@@ -39,6 +43,7 @@ ReSpeaker 麦克风
   -> 发布 prediction / prediction_json / 两个完整分布 topic
   -> ros1_sslnet_visualizer.py 实时显示结果
   -> ros1_sslnet_rviz_markers.py 在 RViz 中与 LiDAR 点云叠加
+  -> ros1_sslnet_audio_map_fusion.py 将多帧预测融合到 odom 固定坐标系
 ```
 
 `ros1_sslnet_audio_node.py` subscribes to live multichannel ReSpeaker audio and
@@ -454,6 +459,341 @@ python deploy/ros1_sslnet_rviz_markers.py \
   _frame_id:=livox_frame \
   _show_distributions:=false
 ```
+
+## 6. 维护全局 Audio Map
+
+单帧的红色预测点会随着音频噪声波动。`ros1_sslnet_audio_map_fusion.py` 订阅每一帧
+SSLNet 的 DOA/distance 分布和机器人 odom，并使用
+`utlis/prob_update_doa.py` 中的 `StreamingSourceMapFusion` 在 odom 固定坐标系中累计
+全局声源概率图。它会显式转换实时模型的坐标约定：
+
+```text
+SSLNet: 0 deg=机器人 +x/front, 90 deg=机器人 +y/left
+ROS map: x/y 平面与 odom yaw
+```
+
+因此发布的全局声源 argmax 可直接与 ROS odom 地图或已变换到 odom frame 的 LiDAR 点云
+叠加。
+
+在音频推理节点与 odom topic 已经运行时启动：
+
+```bash
+source /opt/ros/noetic/setup.bash
+cd /home/kemove/yyz/audio-nav/respeaker_ros
+
+python deploy/ros1_sslnet_audio_map_fusion.py \
+  _odom_topic:=/lio/odom \
+  _map_size_m:=30.0 \
+  _resolution:=0.10 \
+  _max_distance_m:=6.0
+```
+
+发布 topic：
+
+```text
+/sslnet_audio_map/map
+  nav_msgs/OccupancyGrid，全局 audio map 热力图
+
+/sslnet_audio_map/markers
+  visualization_msgs/MarkerArray，彩色格子为 heatmap，红点为全局 argmax，蓝箭头为当前机器人位姿，蓝线为运动轨迹
+
+/sslnet_audio_map/argmax
+  geometry_msgs/PointStamped，全局预测声源点
+
+/sslnet_audio_map/argmax_json
+  String，包含 x/y、frame_id、是否更新和置信度
+
+/sslnet_audio_map/status
+  String，即使尚未成功融合也会发布，指出当前仍在等待的输入
+```
+
+在 RViz 中进行全局融合验证：
+
+1. 将 `Fixed Frame` 设置为 odom 消息的 `header.frame_id`，例如 `odom` 或 `camera_init`。
+2. 添加 `MarkerArray`，topic 选择 `/sslnet_audio_map/markers`。其中彩色格子 heatmap 与红点
+   使用完全相同的 marker 坐标链，适合与 LiDAR 对齐验证。
+3. `/sslnet_audio_map/map` 保留为 `OccupancyGrid` 输出；如 RViz 的 `Map` 显示位置与 marker
+   不一致，请关闭 `Map` 显示，直接使用上一步的彩色 marker heatmap。
+4. 添加已处于相同固定坐标系、或有 TF 可变换到该坐标系的 LiDAR `PointCloud2`。
+
+这样一张 RViz 图中会同时显示：
+
+```text
+LiDAR 点云                 环境与目标几何位置
+彩色格子 heatmap           多帧融合概率，红色越深概率越高
+红色球点                   当前全局预测声源 argmax
+蓝色箭头 / 蓝色轨迹线      当前机器人朝向 / 已经过的位置
+绿色球点（fake 模式）      用于比较的真实模拟声源位置
+```
+
+机器人轨迹最多保存最近 `1000` 次融合位置，可通过参数修改：
+
+```bash
+python deploy/ros1_sslnet_audio_map_fusion.py \
+  _odom_topic:=/lio/odom \
+  _robot_path_length:=3000
+```
+
+注意：全局 map 位于 odom 固定坐标系，不能在机器人运动时简单固定显示到
+`livox_frame`。点云仍使用 `livox_frame` 时，RViz 必须能获得 odom frame 到
+`livox_frame` 的实时 TF。
+
+`_broadcast_odom_tf` 不是通常需要打开的选项。只有确认 TF 树中没有这一条变换，并且
+`/lio/odom` 的 pose 确实就是 `livox_frame` 在全局 frame 下的位姿时，才可以测试由
+audio map 节点广播 TF：
+
+```bash
+python deploy/ros1_sslnet_audio_map_fusion.py \
+  _odom_topic:=/lio/odom \
+  _broadcast_odom_tf:=true \
+  _sensor_frame_id:=livox_frame
+```
+
+如果开启后位置变差，应立即去掉 `_broadcast_odom_tf:=true` 与 `_sensor_frame_id`，
+继续使用 LIO 或机器人系统已有的 TF。如果 odom 表示机器人机体而 LiDAR 与机体之间
+存在外参，也必须使用已有的 TF 树或正确配置外参。
+
+### 在 `livox_frame` 中同时观察点云与 Audio Map
+
+如果希望 RViz 的观察坐标统一显示为 LiDAR 当前坐标系，应让 audio map 继续发布在
+`/lio/odom/header.frame_id` 给出的全局 frame 下，并将 RViz 的 `Fixed Frame` 改为
+`livox_frame`。RViz 会通过 TF 将历史 audio map、声源点和机器人轨迹转换到当前
+LiDAR 视角；原始 LiDAR 点云本身已经位于 `livox_frame`。
+
+首先确认两个 frame：
+
+```bash
+rostopic echo -n 1 /lio/odom/header/frame_id
+rostopic echo -n 1 /livox/points_rviz/header/frame_id
+```
+
+推荐保持现有能够正确显示 LiDAR 与机器人 marker 的 TF 配置，启动 audio map 时不额外
+广播 TF：
+
+```bash
+python deploy/ros1_sslnet_audio_map_fusion.py \
+  _odom_topic:=/lio/odom
+```
+
+在 RViz 中沿用当前显示正确的 `Fixed Frame`，并使用 marker heatmap：
+
+```text
+Fixed Frame: 当前已能正确显示点云和机器人 marker 的 frame
+MarkerArray: /sslnet_audio_map/markers
+PointCloud2: /livox/points_rviz
+```
+
+不要对 audio map 节点设置 `_frame_id:=livox_frame`。`_frame_id` 仅在 odom 消息缺少
+`header.frame_id` 时作为后备的全局 frame；如果它与 odom 的 frame 冲突，节点会忽略
+该参数并给出警告。已经以错误 frame 启动过节点时，请重启节点或调用 reset 服务清空
+此前累计的 heatmap：
+
+```bash
+rosservice call /sslnet_audio_map/reset
+```
+
+彩色 marker heatmap 的显示参数：
+
+```bash
+python deploy/ros1_sslnet_audio_map_fusion.py \
+  _odom_topic:=/lio/odom \
+  _heatmap_marker_threshold:=0.08 \
+  _heatmap_marker_max_cells:=6000 \
+  _heatmap_marker_height:=0.02
+```
+
+- `_publish_heatmap_marker`：是否在 `/sslnet_audio_map/markers` 中发布彩色格子 heatmap，默认 `true`。
+- `_heatmap_marker_threshold`：仅显示相对于当前峰值高于该比例的格子，默认 `0.08`。
+- `_heatmap_marker_max_cells`：最多发布的彩色格子数，默认 `6000`。
+- `_heatmap_marker_height`：heatmap 在 RViz 平面上方的高度，默认 `0.02 m`。
+
+如果 `/sslnet_audio_map/markers` 没有输出，请注意该 topic 只有在首次成功融合之后才会
+产生消息。先确认已重启到最新节点，再查看诊断状态：
+
+```bash
+rostopic echo -n 1 /sslnet_audio_map/status
+```
+
+`waiting_for` 的含义：
+
+```text
+odom                              未收到 /lio/odom
+prediction_json                   未收到真实或 fake 推理摘要
+doa_distribution                  未收到 DOA 分布
+distance_distribution             未收到 distance 分布
+odom_at_or_after_prediction_stamp 预测时间晚于当前最新 odom
+odom_timestamp_difference_too_large 预测与最近 odom 相差超过 `_max_odom_diff_sec`
+new_prediction_distribution       当前预测已处理，等待下一帧
+```
+
+确认各输入确实存在：
+
+```bash
+rostopic hz /lio/odom
+rostopic hz /sslnet_audio_inference/prediction_json
+rostopic hz /sslnet_audio_inference/doa_distribution
+rostopic hz /sslnet_audio_inference/distance_distribution
+```
+
+常用融合参数：
+
+```bash
+python deploy/ros1_sslnet_audio_map_fusion.py \
+  _odom_topic:=/lio/odom \
+  _map_size_m:=30.0 \
+  _resolution:=0.10 \
+  _beta_r:=0.2 \
+  _sigma_Q_cells:=1.0 \
+  _min_confidence:=0.05
+```
+
+- `_map_size_m` 和 `_resolution`：全局方形地图边长与格子分辨率。
+- `_beta_r`：distance 分布在融合中的影响，越大越依赖距离预测。
+- `_sigma_Q_cells`：每次更新前的空间扩散量，允许声源位置有轻微不确定性。
+- `_min_confidence`：DOA 和 distance 峰值置信度的较小值低于该阈值时跳过当前更新。
+- `_argmax_resolution`：输出声源位置的网格精度，默认与 `_resolution` 相同。
+- `_max_odom_diff_sec`：预测时间戳可匹配的最大 odom 时间差，默认 `0.20 s`。
+
+切换到新的声源目标或重新开始实验时，清空已经累计的 map：
+
+```bash
+rosservice call /sslnet_audio_map/reset
+```
+
+## 7. 没有训练模型时验证 Audio Map
+
+`ros1_sslnet_fake_prediction.py` 可以替代真实 SSLNet 推理节点。它将轨迹最后一帧 odom 的
+`x/y` 位置视为一个固定声源；随后每接收一帧当前 odom，就计算机器人相对该声源的真实
+DOA/distance，再为角度和距离加入高斯噪声并发布模拟概率分布：
+
+```text
+当前 odom + 轨迹最终 odom 位置
+  -> ground-truth DOA/distance
+  -> 加入角度/距离噪声
+  -> 发布 /sslnet_audio_inference/* 假预测
+  -> ros1_sslnet_audio_map_fusion.py 融合并显示全局 argmax
+```
+
+它发布的 topic 与真实网络完全相同，因此使用 fake 节点时不要同时启动
+`ros1_sslnet_audio_node.py`。
+
+### 使用 ROS1 `.bag` 取最后一帧声源位置
+
+先确认 bag 中的 odom topic：
+
+```bash
+rosbag info /path/to/test.bag | grep -E "/lio/odom|/lio/robo/odom"
+```
+
+终端 1：启动 fake prediction 节点。节点会先扫描 bag 的最后一帧 `/lio/odom`，保存其
+位置作为绿色 ground-truth 声源点：
+
+```bash
+source /opt/ros/noetic/setup.bash
+cd /home/kemove/yyz/audio-nav/respeaker_ros
+
+python deploy/ros1_sslnet_fake_prediction.py \
+  _bag_path:=/path/to/test.bag \
+  _bag_odom_topic:=/lio/odom \
+  _odom_topic:=/lio/odom \
+  _angle_noise_std_deg:=8.0 \
+  _distance_noise_std_m:=0.15
+```
+
+终端 2：启动全局融合：
+
+```bash
+python deploy/ros1_sslnet_audio_map_fusion.py \
+  _odom_topic:=/lio/odom \
+  _map_size_m:=30.0 \
+  _resolution:=0.10 \
+  _max_distance_m:=6.0 \
+  _min_confidence:=0.0
+```
+
+终端 3：播放同一个 bag：
+
+```bash
+rosparam set use_sim_time true
+rosbag play --clock /path/to/test.bag
+```
+
+### 使用已提取的 odom NPZ 取声源位置
+
+若原始数据来自 ROS2 bag，或已通过数据处理流程生成
+`lio_odom.npz`，fake 节点可以直接读取 NPZ 最后一行作为声源位置，同时订阅正在回放或
+实时发布的同坐标系 odom topic：
+
+```bash
+python deploy/ros1_sslnet_fake_prediction.py \
+  _odom_npz:=/path/to/sequence/lio_odom.npz \
+  _odom_topic:=/lio/odom \
+  _angle_noise_std_deg:=8.0 \
+  _distance_noise_std_m:=0.15
+```
+
+也可以跳过 bag，手动指定一个固定声源世界坐标：
+
+```bash
+python deploy/ros1_sslnet_fake_prediction.py \
+  _source_x:=3.0 \
+  _source_y:=-1.5 \
+  _odom_topic:=/lio/odom
+```
+
+### RViz 中对比 Ground Truth 与融合结果
+
+在前述全局 RViz 配置基础上，再添加一个 `MarkerArray`：
+
+```text
+/sslnet_fake_prediction/markers
+```
+
+显示含义：
+
+```text
+绿色球点    fake 数据使用的真实固定声源位置，即轨迹最后一帧位置
+红色球点    audio map 当前融合后的 argmax 预测位置
+热力图      累积后的全局声源概率
+蓝色箭头    当前 odom 中的机器人位姿
+```
+
+可查看每帧模拟预测及其误差：
+
+```bash
+rostopic echo /sslnet_audio_inference/prediction_json
+```
+
+其中额外包含：
+
+```text
+ground_truth_source_x / ground_truth_source_y
+ground_truth_doa_deg / ground_truth_distance_m
+doa_abs_error_deg / distance_abs_error_m
+```
+
+常用模拟参数：
+
+```bash
+python deploy/ros1_sslnet_fake_prediction.py \
+  _bag_path:=/path/to/test.bag \
+  _angle_noise_std_deg:=12.0 \
+  _distance_noise_std_m:=0.25 \
+  _doa_sigma_deg:=8.0 \
+  _distance_sigma_m:=0.20 \
+  _uniform_noise_weight:=0.05 \
+  _seed:=0
+```
+
+- `_angle_noise_std_deg` 与 `_distance_noise_std_m`：每帧峰值预测的随机误差。
+- `_doa_sigma_deg` 与 `_distance_sigma_m`：输出概率分布本身的展宽。
+- `_uniform_noise_weight`：混入均匀背景概率的比例。
+- `_publish_hz`：限制 fake 输出频率；默认 `0` 表示每条 odom 都输出一帧。
+- `_seed`：固定随机种子，便于复现实验。
+
+如果某些帧到最终声源位置的距离超过 `_max_distance_m`，模拟距离会被裁剪，融合验证不再
+等价于完整真实距离。此时应增大 fake 节点和 audio map 节点两侧一致的
+`_max_distance_m`。
 
 ## 参数覆盖与训练一致性
 
