@@ -10,7 +10,7 @@ class SSLNet_DOA(nn.Module):
         fusion_out_dim=256,
         pretrained_depth_encoder=True,
         use_compress=True,        
-        num_doa_bins=360,   # 新增：DOA 高斯的维度
+        num_doa_bins=360,
         num_distance_bins=120,
         audio_in_channels=2,
         num_classes=0,
@@ -63,7 +63,7 @@ class SSLNet_DOA(nn.Module):
 class SSLNet_depth_DOA(nn.Module):
     def __init__(
         self,
-        spec_out_dim=256,
+        spec_out_dim=64,
         depth_out_dim=64,
         fusion_out_dim=256,
         pretrained_depth_encoder=True,
@@ -83,7 +83,7 @@ class SSLNet_depth_DOA(nn.Module):
         # ===== Audio encoder =====
         self.spec_encoder = SpecEncoderGlobal(
             in_channels=audio_in_channels,
-            channels=(16, 32, 64),
+            channels=(16, 32),
             dropout=0.1,
             out_dim=spec_out_dim,
             use_compress=use_compress,

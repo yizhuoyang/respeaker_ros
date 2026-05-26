@@ -12,8 +12,12 @@ from model_training.train_doa import train_one_epoch, validate
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train DOA + distance model on synchronized ROS2 dataset.")
-    parser.add_argument("--data-root", default="synced_dataset", help="Dataset root or a single synchronized dataset directory.")
+    parser = argparse.ArgumentParser(description="Train DOA + distance model on synced odom or pairs_ros1 labelCloud data.")
+    parser.add_argument(
+        "--data-root",
+        default="synced_dataset",
+        help="Dataset root or sequence directory; supports synced_dataset and pairs_ros1 train/test layouts.",
+    )
     parser.add_argument("--train-root", default=None, help="Optional train dataset root. Overrides --data-root split.")
     parser.add_argument("--val-root", default=None, help="Optional val dataset root. Overrides --data-root split.")
     parser.add_argument(
@@ -36,6 +40,20 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-5)
+    parser.add_argument(
+        "--lr-scheduler",
+        default="cosine",
+        choices=["cosine", "step", "none"],
+        help="Learning-rate decay strategy. cosine decays smoothly across all epochs.",
+    )
+    parser.add_argument(
+        "--min-lr-ratio",
+        type=float,
+        default=0.05,
+        help="Minimum LR as a fraction of --lr for cosine decay.",
+    )
+    parser.add_argument("--lr-step-size", type=int, default=20, help="Epoch interval for step LR decay.")
+    parser.add_argument("--lr-gamma", type=float, default=0.5, help="Multiplicative LR decay for --lr-scheduler step.")
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--log-dir", default="runs/ssl_doa_distance_synced")
@@ -394,6 +412,28 @@ def build_model(args, audio_in_channels):
     )
 
 
+def build_scheduler(optimizer, args):
+    if args.lr_scheduler == "none":
+        return None
+    if args.lr_scheduler == "cosine":
+        if not 0.0 <= args.min_lr_ratio <= 1.0:
+            raise ValueError("--min-lr-ratio must be between 0 and 1")
+        return torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=max(args.epochs, 1),
+            eta_min=args.lr * args.min_lr_ratio,
+        )
+    if args.lr_step_size <= 0:
+        raise ValueError("--lr-step-size must be positive")
+    if not 0.0 < args.lr_gamma <= 1.0:
+        raise ValueError("--lr-gamma must be in (0, 1]")
+    return torch.optim.lr_scheduler.StepLR(
+        optimizer,
+        step_size=args.lr_step_size,
+        gamma=args.lr_gamma,
+    )
+
+
 def load_checkpoint_if_needed(model, checkpoint, device):
     if not checkpoint:
         return
@@ -442,13 +482,16 @@ def main():
         lr=args.lr,
         weight_decay=args.weight_decay,
     )
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr * 0.05)
+    scheduler = build_scheduler(optimizer, args)
     writer = SummaryWriter(args.log_dir)
+    print(f"LR scheduler: {args.lr_scheduler}")
 
     best_val_loss = float("inf")
     global_step = 0
     for epoch in range(1, args.epochs + 1):
-        print(f"\nEpoch {epoch}/{args.epochs} | lr={optimizer.param_groups[0]['lr']:.3e}")
+        current_lr = optimizer.param_groups[0]["lr"]
+        print(f"\nEpoch {epoch}/{args.epochs} | lr={current_lr:.3e}")
+        writer.add_scalar("LR/epoch", current_lr, epoch)
         train_loss, global_step = train_one_epoch(
             model=model,
             train_loader=train_loader,
@@ -478,14 +521,22 @@ def main():
             gate_doa_by_pred_class=args.gate_doa_by_pred_class,
             signal_class_id=2,
         )
-        # scheduler.step()
+        if scheduler is not None:
+            scheduler.step()
+        next_lr = optimizer.param_groups[0]["lr"]
         print(f"Train loss: {train_loss:.6f} | Val loss: {val_loss:.6f}")
+        if scheduler is not None:
+            print(f"Next lr: {next_lr:.3e}")
 
         state = {
             "model": model.state_dict(),
             "epoch": epoch,
             "args": vars(args),
             "audio_in_channels": audio_in_channels,
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict() if scheduler is not None else None,
+            "trained_lr": current_lr,
+            "lr": next_lr,
         }
         torch.save(state, Path(args.save_dir) / "last_model.pth")
         if val_loss < best_val_loss:

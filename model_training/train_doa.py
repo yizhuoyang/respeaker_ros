@@ -23,6 +23,18 @@ def masked_soft_cross_entropy(logits, target, mask):
     return soft_cross_entropy(logits[mask], target[mask])
 
 
+def doa_peak_absolute_errors_deg(logits, target, mask=None):
+    """Compute circular peak-angle errors from predicted and target distributions."""
+    num_bins = logits.size(1)
+    pred_bins = logits.argmax(dim=1).float()
+    target_bins = target.argmax(dim=1).float()
+    error_bins = torch.remainder(pred_bins - target_bins + num_bins / 2.0, num_bins) - num_bins / 2.0
+    errors_deg = error_bins.abs() * (360.0 / num_bins)
+    if mask is not None:
+        errors_deg = errors_deg[mask.bool()]
+    return errors_deg
+
+
 def combined_loss(
     logits_doa,
     logits_dist,
@@ -77,6 +89,8 @@ def train_one_epoch(
     running_cls_total = 0
     running_gate_active = 0
     running_gate_total = 0
+    running_doa_error_deg = 0.0
+    running_doa_error_count = 0
     n_samples = 0
     if class_weights is not None:
         class_weights = class_weights.to(device)
@@ -104,6 +118,9 @@ def train_one_epoch(
         if loss_mask is not None:
             running_gate_active += int(loss_mask.bool().sum().item())
             running_gate_total += int(loss_mask.numel())
+        doa_errors_deg = doa_peak_absolute_errors_deg(logits_doa.detach(), target_doa, has_doa)
+        running_doa_error_deg += float(doa_errors_deg.sum().item())
+        running_doa_error_count += int(doa_errors_deg.numel())
         loss, loss_doa, loss_dist, loss_cls = combined_loss(
             logits_doa,
             logits_dist,
@@ -145,6 +162,7 @@ def train_one_epoch(
         "loss_class": running_cls / max(n_samples, 1),
         "class_acc": running_cls_correct / max(running_cls_total, 1),
         "gate_active_ratio": running_gate_active / max(running_gate_total, 1),
+        "doa_mae_deg": running_doa_error_deg / max(running_doa_error_count, 1),
     }
     if writer is not None:
         writer.add_scalar("Loss/train_epoch_total", metrics["loss"], epoch)
@@ -153,7 +171,12 @@ def train_one_epoch(
         writer.add_scalar("Loss/train_epoch_class", metrics["loss_class"], epoch)
         writer.add_scalar("Metric/train_class_acc", metrics["class_acc"], epoch)
         writer.add_scalar("Metric/train_gate_active_ratio", metrics["gate_active_ratio"], epoch)
-    print(f"Train gate active ratio: {metrics['gate_active_ratio']:.4f}")
+        writer.add_scalar("Metric/train_doa_mae_deg", metrics["doa_mae_deg"], epoch)
+    print(
+        f"Train DOA peak MAE: {metrics['doa_mae_deg']:.3f} deg "
+        f"({running_doa_error_count} labeled samples) | "
+        f"gate active ratio: {metrics['gate_active_ratio']:.4f}"
+    )
     return metrics["loss"], global_step
 
 
@@ -182,6 +205,8 @@ def validate(
     running_cls_total = 0
     running_gate_active = 0
     running_gate_total = 0
+    running_doa_error_deg = 0.0
+    running_doa_error_count = 0
     n_samples = 0
     first_batch_for_plot = None
     if class_weights is not None:
@@ -209,6 +234,9 @@ def validate(
         if loss_mask is not None:
             running_gate_active += int(loss_mask.bool().sum().item())
             running_gate_total += int(loss_mask.numel())
+        doa_errors_deg = doa_peak_absolute_errors_deg(logits_doa, target_doa, has_doa)
+        running_doa_error_deg += float(doa_errors_deg.sum().item())
+        running_doa_error_count += int(doa_errors_deg.numel())
         loss, loss_doa, loss_dist, loss_cls = combined_loss(
             logits_doa,
             logits_dist,
@@ -248,6 +276,7 @@ def validate(
         "loss_class": running_cls / max(n_samples, 1),
         "class_acc": running_cls_correct / max(running_cls_total, 1),
         "gate_active_ratio": running_gate_active / max(running_gate_total, 1),
+        "doa_mae_deg": running_doa_error_deg / max(running_doa_error_count, 1),
     }
     if writer is not None:
         writer.add_scalar("Loss/val_epoch_total", metrics["loss"], epoch)
@@ -256,9 +285,14 @@ def validate(
         writer.add_scalar("Loss/val_epoch_class", metrics["loss_class"], epoch)
         writer.add_scalar("Metric/val_class_acc", metrics["class_acc"], epoch)
         writer.add_scalar("Metric/val_gate_active_ratio", metrics["gate_active_ratio"], epoch)
+        writer.add_scalar("Metric/val_doa_mae_deg", metrics["doa_mae_deg"], epoch)
         if first_batch_for_plot is not None and (epoch == 1 or epoch % 5 == 0):
             add_distribution_figures(writer, first_batch_for_plot, epoch, max_images=max_images)
-    print(f"Val gate active ratio: {metrics['gate_active_ratio']:.4f}")
+    print(
+        f"Val DOA peak MAE: {metrics['doa_mae_deg']:.3f} deg "
+        f"({running_doa_error_count} labeled samples) | "
+        f"gate active ratio: {metrics['gate_active_ratio']:.4f}"
+    )
     return metrics["loss"]
 
 

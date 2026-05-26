@@ -15,6 +15,7 @@ from dataloader.utils import (
     load_audio_wav,
     load_image,
     load_noise_profile,
+    make_doa_gaussian_from_azimuth_deg,
     make_doa_gaussian_from_yaw_deg,
     make_r_gaussian_1d,
     parse_float_list,
@@ -59,7 +60,7 @@ SIGNAL_STATIC_CLASS = 2
 
 
 class SingleStepDataset(Dataset):
-    """Dataset for synchronized ROS2 audio/depth/DOA/distance samples."""
+    """Dataset for synced odom labels or pairs_ros1 labelCloud bbox labels."""
 
     def __init__(
         self,
@@ -189,6 +190,10 @@ class SingleStepDataset(Dataset):
     def _collect_samples(self):
         samples = []
         for dataset_dir in self._find_dataset_dirs():
+            if is_pairs_dataset_dir(dataset_dir):
+                samples.extend(self._collect_pairs_samples(dataset_dir))
+                continue
+
             audio_dir = dataset_dir / "audio"
             depth_dir = dataset_dir / "depth"
             color_dir = dataset_dir / "color"
@@ -246,6 +251,50 @@ class SingleStepDataset(Dataset):
                     "class_label": class_label,
                     "has_doa": has_doa,
                 })
+        return samples
+
+    def _collect_pairs_samples(self, dataset_dir):
+        samples = []
+        audio_dir = dataset_dir / "audio"
+        label_dir = dataset_dir / "labels"
+        depth_dir = dataset_dir / "depth"
+        image_dir = dataset_dir / "image"
+
+        for audio_path in sorted(audio_dir.glob("*.wav"), key=lambda p: numeric_stem(p.stem)):
+            sample_id = audio_path.stem
+            label_path = label_dir / f"{sample_id}.txt"
+            target = load_labelcloud_target(label_path)
+            if target is None:
+                continue
+            if self._should_skip_by_distance(target["distance_xy"]):
+                self.skipped_by_distance += 1
+                continue
+            if self._should_skip_signal_by_amplitude(audio_path):
+                self.skipped_by_signal_amplitude += 1
+                continue
+
+            depth_path = find_modality_file(depth_dir, sample_id, [".png", ".npy", ".jpg", ".jpeg"])
+            rgb_path = find_modality_file(image_dir, sample_id, [".png", ".npy", ".jpg", ".jpeg"])
+            if self.require_depth and depth_path is None:
+                continue
+            if self.require_rgb and rgb_path is None:
+                continue
+            samples.append({
+                "dataset_dir": dataset_dir,
+                "sample_id": sample_id,
+                "audio": audio_path,
+                "depth": depth_path,
+                "rgb": rgb_path,
+                "label": label_path,
+                "label_type": "labelcloud_xy",
+                "azimuth_deg": target["azimuth_deg"],
+                "distance_xy": target["distance_xy"],
+                "distance_3d": target["distance_3d"],
+                "target_x": target["x"],
+                "target_y": target["y"],
+                "class_label": SIGNAL_STATIC_CLASS,
+                "has_doa": True,
+            })
         return samples
 
     def _load_distance_xy(self, doa_path, distance_path):
@@ -314,7 +363,19 @@ class SingleStepDataset(Dataset):
         )
 
         has_doa = bool(item.get("has_doa", True))
-        if has_doa:
+        if item.get("label_type") == "labelcloud_xy":
+            doa = {
+                "robot_x": 0.0,
+                "robot_y": 0.0,
+                "target_x": item["target_x"],
+                "target_y": item["target_y"],
+                "robot_heading_world_deg": 0.0,
+            }
+            yaw_signed_deg = float(item["azimuth_deg"])
+            distance_xy = float(item["distance_xy"])
+            distance_3d = float(item["distance_3d"])
+            doa_reference = "azimuth_xy"
+        elif has_doa:
             doa_values = np.load(item["doa"]).astype(np.float32)
             distance_values = np.load(item["distance"]).astype(np.float32)
             doa = array_to_named_values(doa_values, DOA_FIELDS)
@@ -323,6 +384,7 @@ class SingleStepDataset(Dataset):
             yaw_signed_deg = float(doa["heading_target_yaw_signed_deg"])
             distance_xy = float(distance.get("distance_xy", doa.get("distance_xy", 0.0)))
             distance_3d = float(distance.get("distance_3d", doa.get("distance_3d", distance_xy)))
+            doa_reference = "heading_yaw"
         else:
             doa = {
                 "robot_x": 0.0,
@@ -334,6 +396,7 @@ class SingleStepDataset(Dataset):
             yaw_signed_deg = 0.0
             distance_xy = 0.0
             distance_3d = 0.0
+            doa_reference = "heading_yaw"
 
         if self.audio_feat == "spec":
             spectrogram = compute_spectrogram(audio, self.use_compress)
@@ -341,13 +404,22 @@ class SingleStepDataset(Dataset):
             spectrogram = compute_stft_phase_features(audio, mode=self.audio_feat, pairs=self.ipd_pairs)
         spectrogram = self._maybe_apply_time_mask(spectrogram)
 
-        doa_map = make_doa_gaussian_from_yaw_deg(
-            yaw_signed_deg,
-            distance_m=distance_xy,
-            num_bins=360,
-            base_sigma_deg=3.0,
-            sigma_scale_deg=1.0,
-        )
+        if doa_reference == "azimuth_xy":
+            doa_map = make_doa_gaussian_from_azimuth_deg(
+                yaw_signed_deg,
+                distance_m=distance_xy,
+                num_bins=360,
+                base_sigma_deg=3.0,
+                sigma_scale_deg=1.0,
+            )
+        else:
+            doa_map = make_doa_gaussian_from_yaw_deg(
+                yaw_signed_deg,
+                distance_m=distance_xy,
+                num_bins=360,
+                base_sigma_deg=3.0,
+                sigma_scale_deg=1.0,
+            )
         distant_map = make_r_gaussian_1d(
             distance_xy,
             num_bins=120,
@@ -370,6 +442,7 @@ class SingleStepDataset(Dataset):
             "distant_map": torch.as_tensor(distant_map, dtype=torch.float32),
             "distance": torch.as_tensor([distance_xy, distance_3d], dtype=torch.float32),
             "doa_deg": torch.as_tensor(yaw_signed_deg, dtype=torch.float32),
+            "doa_reference": doa_reference,
             "pose": torch.as_tensor(pose, dtype=torch.float32),
             "heading": heading_rad,
             "sound_source": torch.as_tensor(source_position, dtype=torch.float32),
@@ -513,6 +586,8 @@ class SingleStepDataset(Dataset):
 
     def get_yaw_deg(self, idx: int):
         item = self.file_list[idx]
+        if item.get("label_type") == "labelcloud_xy":
+            return float(item["azimuth_deg"])
         if not item.get("has_doa", True):
             return 0.0
         doa_values = np.load(item["doa"]).astype(np.float32)
@@ -537,6 +612,36 @@ def numeric_stem(stem):
 
 def is_dataset_dir(path):
     return (path / "audio").exists()
+
+
+def is_pairs_dataset_dir(path):
+    return (path / "audio").exists() and (path / "labels").exists()
+
+
+def load_labelcloud_target(path):
+    if not path.exists():
+        return None
+    lines = [line for line in path.read_text().splitlines() if line.strip()]
+    targets = []
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 15:
+            raise ValueError(f"Expected at least 15 labelCloud fields in {path}, got {len(fields)}")
+        if fields[0].lower() not in {"person", "pedestrian"}:
+            continue
+        x, y, z = map(float, fields[11:14])
+        distance_xy = float(np.hypot(x, y))
+        targets.append({
+            "x": x,
+            "y": y,
+            "z": z,
+            "distance_xy": distance_xy,
+            "distance_3d": float(np.sqrt(x * x + y * y + z * z)),
+            "azimuth_deg": float(np.degrees(np.arctan2(y, x)) % 360.0),
+        })
+    if not targets:
+        return None
+    return min(targets, key=lambda target: target["distance_xy"])
 
 
 def parse_name_filter(value):

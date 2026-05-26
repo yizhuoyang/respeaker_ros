@@ -1,4 +1,5 @@
 import argparse
+import csv
 import os
 from pathlib import Path
 
@@ -18,8 +19,12 @@ from main_doa import has_explicit_train_test_split, infer_audio_in_channels, par
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Test and visualize DOA + distance model.")
-    parser.add_argument("--data-root", default="synced_dataset")
+    parser = argparse.ArgumentParser(description="Test DOA + distance distributions on synced odom or pairs_ros1 labelCloud data.")
+    parser.add_argument(
+        "--data-root",
+        default="synced_dataset",
+        help="Dataset root or sequence directory; supports synced_dataset and pairs_ros1 train/test layouts.",
+    )
     parser.add_argument("--train-root", default=None, help="Train root used during training.")
     parser.add_argument("--val-root", default=None, help="Val root used during training.")
     parser.add_argument("--eval-split", default="val", choices=["val", "train", "all"])
@@ -43,6 +48,8 @@ def parse_args():
     parser.add_argument("--vis-dir", default="vis_result_doa")
     parser.add_argument("--vis-dist-dir", default="vis_result_dist")
     parser.add_argument("--doa-vis", default="curve", choices=["curve", "polar"], help="Save one DOA visualization type.")
+    parser.add_argument("--predictions-csv", default=None, help="Optional CSV output for predicted peaks and errors.")
+    parser.add_argument("--distributions-npz", default=None, help="Optional NPZ output for full DOA/distance probability arrays.")
     parser.add_argument("--audio-feat", default="ipd", choices=["ipd", "spec", "phase", "both", "gcc_phat_complex"])
     parser.add_argument("--audio-channels", default="1,2,3,4")
     parser.add_argument("--ipd-pairs", default="0-1,0-2,0-3,1-2,1-3,2-3")
@@ -331,6 +338,32 @@ def visualize_doa_polar(pred, gt, idx, save_path):
     plt.close()
 
 
+def circular_abs_error_deg(pred_deg, gt_deg):
+    return float(abs((float(pred_deg) - float(gt_deg) + 180.0) % 360.0 - 180.0))
+
+
+def write_prediction_outputs(args, rows, doa_probabilities, distance_probabilities):
+    if args.predictions_csv:
+        output_path = Path(args.predictions_csv)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(rows)
+        print(f"Predictions saved to {output_path}")
+
+    if args.distributions_npz:
+        output_path = Path(args.distributions_npz)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(
+            output_path,
+            doa_probabilities=np.asarray(doa_probabilities, dtype=np.float32),
+            distance_probabilities=np.asarray(distance_probabilities, dtype=np.float32),
+            paths=np.asarray([row["path"] for row in rows]),
+        )
+        print(f"Distributions saved to {output_path}")
+
+
 def main():
     args = parse_args()
     if args.classification_only or args.gate_doa_by_pred_class:
@@ -359,6 +392,9 @@ def main():
     class_total = 0
     class_counts = torch.zeros(len(CLASS_NAMES), dtype=torch.long)
     class_correct_counts = torch.zeros(len(CLASS_NAMES), dtype=torch.long)
+    prediction_rows = []
+    doa_probabilities = []
+    distance_probabilities = []
     with torch.no_grad():
         for idx in indices:
             if idx < 0 or idx >= len(dataset):
@@ -404,6 +440,27 @@ def main():
             gt_doa_np = gt_doa.squeeze(0).cpu().numpy()
             pred_dist_np = pred_dist.squeeze(0).cpu().numpy()
             gt_dist_np = gt_dist.squeeze(0).cpu().numpy()
+            pred_doa_bin = int(pred_doa_np.argmax())
+            gt_doa_bin = int(gt_doa_np.argmax())
+            has_doa_label = bool(sample.get("has_doa", True))
+            doa_error_deg = circular_abs_error_deg(pred_doa_bin, gt_doa_bin) if has_doa_label else np.nan
+            distance_axis = np.linspace(0.0, 6.0, len(pred_dist_np), dtype=np.float32)
+            pred_distance_m = float(distance_axis[int(pred_dist_np.argmax())])
+            gt_distance_m = float(sample["distance"][0].item())
+            prediction_rows.append({
+                "index": idx,
+                "sample_id": sample["sample_id"],
+                "sequence": Path(sample["dataset_dir"]).name,
+                "path": sample["path"],
+                "gt_doa_bin_deg": gt_doa_bin,
+                "pred_doa_bin_deg": pred_doa_bin,
+                "doa_abs_error_deg": doa_error_deg,
+                "gt_distance_m": gt_distance_m,
+                "pred_distance_m": pred_distance_m,
+                "distance_abs_error_m": abs(pred_distance_m - gt_distance_m),
+            })
+            doa_probabilities.append(pred_doa_np)
+            distance_probabilities.append(pred_dist_np)
 
             class_text = ""
             if class_logits is not None and class_target is not None:
@@ -418,9 +475,10 @@ def main():
                     f"gt_class={CLASS_NAMES[gt_class]} pred_class={CLASS_NAMES[pred_class]}"
                 )
             doa_text = (
-                f"gt_doa_bin={int(gt_doa_np.argmax())} pred_doa_bin={int(pred_doa_np.argmax())} "
+                f"gt_doa_bin={gt_doa_bin} pred_doa_bin={pred_doa_bin} "
+                f"doa_error={doa_error_deg:.3f}deg "
                 f"gt_dist_bin={int(gt_dist_np.argmax())} pred_dist_bin={int(pred_dist_np.argmax())}"
-                if bool(sample.get("has_doa", True))
+                if has_doa_label
                 else "no_doa_label"
             )
             if args.print_samples:
@@ -451,6 +509,10 @@ def main():
 
     if n_samples:
         print(f"Average loss on {n_samples} samples: {total_loss / n_samples:.6f}")
+        mean_doa_error = np.nanmean([row["doa_abs_error_deg"] for row in prediction_rows])
+        mean_distance_error = np.mean([row["distance_abs_error_m"] for row in prediction_rows])
+        print(f"Peak DOA MAE: {mean_doa_error:.3f} deg | Peak distance MAE: {mean_distance_error:.3f} m")
+        write_prediction_outputs(args, prediction_rows, doa_probabilities, distance_probabilities)
     if class_total:
         print(f"Classification accuracy: {class_correct / class_total:.6f} ({class_correct}/{class_total})")
         for class_id, class_name in enumerate(CLASS_NAMES):

@@ -1,3 +1,9 @@
+import os
+import tempfile
+
+# librosa lazily imports numba, which needs a writable cache outside site-packages.
+os.environ.setdefault("NUMBA_CACHE_DIR", os.path.join(tempfile.gettempdir(), "respeaker_numba_cache"))
+
 import numpy as np
 import librosa
 from skimage.measure import block_reduce
@@ -501,6 +507,23 @@ def make_doa_gaussian_from_yaw_deg(
     sigma_deg = max(base_sigma_deg + sigma_scale_deg * distance_m, 1e-3)
     angles_deg = np.linspace(0.0, 360.0, num_bins, endpoint=False)
     diff_deg = (angles_deg - angle_deg + 180.0) % 360.0 - 180.0
+    probs = np.exp(-0.5 * (diff_deg / sigma_deg) ** 2)
+    if probs.sum() > 0:
+        probs = probs / probs.sum()
+    return probs.astype(np.float32)
+
+
+def make_doa_gaussian_from_azimuth_deg(
+    azimuth_deg,
+    distance_m=0.0,
+    num_bins=360,
+    base_sigma_deg=3.0,
+    sigma_scale_deg=1.0,
+):
+    """Render a circular target where bin 0 is +x and bin 90 is +y."""
+    sigma_deg = max(base_sigma_deg + sigma_scale_deg * distance_m, 1e-3)
+    angles_deg = np.linspace(0.0, 360.0, num_bins, endpoint=False)
+    diff_deg = (angles_deg - float(azimuth_deg) + 180.0) % 360.0 - 180.0
     probs = np.exp(-0.5 * (diff_deg / sigma_deg) ** 2)
     if probs.sum() > 0:
         probs = probs / probs.sum()

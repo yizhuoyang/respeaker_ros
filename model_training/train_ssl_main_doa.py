@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Convenience launcher for the original main_doa.py SSLNet training path.
+"""Convenience launcher for the main_doa.py SSLNet training path.
 
 This script does not define a new model. It only builds a recommended
-main_doa.py command for the current synced_dataset layout and runs it.
+main_doa.py command for supported synced_dataset or pairs_ros1 layouts and runs it.
 """
 
 import argparse
@@ -20,7 +20,7 @@ def parse_args():
         description="Train the original SSLNet DOA/distance model through main_doa.py."
     )
 
-    parser.add_argument("--data-root", default="synced_dataset")
+    parser.add_argument("--data-root", default="synced_dataset", help="Supports synced_dataset and pairs_ros1 train/test layouts.")
     parser.add_argument("--object-name", default=None, help="Only load one object prefix, e.g. clock/person/dryer/guitar.")
     parser.add_argument("--run-name", default="ssl_main_doa", help="Used to create default weights/runs directories.")
     parser.add_argument("--save-dir", default=None)
@@ -53,6 +53,10 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-5)
+    parser.add_argument("--lr-scheduler", default="cosine", choices=["cosine", "step", "none"])
+    parser.add_argument("--min-lr-ratio", type=float, default=0.05)
+    parser.add_argument("--lr-step-size", type=int, default=20)
+    parser.add_argument("--lr-gamma", type=float, default=0.5)
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--seed", type=int, default=7)
@@ -128,6 +132,14 @@ def main():
         str(args.lr),
         "--weight-decay",
         str(args.weight_decay),
+        "--lr-scheduler",
+        args.lr_scheduler,
+        "--min-lr-ratio",
+        str(args.min_lr_ratio),
+        "--lr-step-size",
+        str(args.lr_step_size),
+        "--lr-gamma",
+        str(args.lr_gamma),
         "--num-workers",
         str(args.num_workers),
         "--device",
