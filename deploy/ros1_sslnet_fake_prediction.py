@@ -80,7 +80,7 @@ class FakeSSLNetPredictionNode:
         from visualization_msgs.msg import MarkerArray
 
         self.rospy = rospy
-        self.odom_topic = rospy.get_param("~odom_topic", "/lio/odom")
+        self.odom_topic = rospy.get_param("~odom_topic", "/Odometry")
         self.source_x, self.source_y, self.source_description = self.load_source_position()
         self.max_distance_m = float(rospy.get_param("~max_distance_m", 6.0))
         self.distance_bins = int(rospy.get_param("~distance_bins", 120))
@@ -324,4 +324,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

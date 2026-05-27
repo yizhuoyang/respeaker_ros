@@ -65,9 +65,18 @@ class SSLNetAudioMapFusionNode:
         self.processed_stamp = None
         self.published_frame_count = 0
 
-        resolution = float(rospy.get_param("~resolution", 0.10))
+        resolution = float(rospy.get_param("~resolution", 0.05))
+        map_center_x = rospy.get_param("~map_center_x", 0.0)
+        map_center_y = rospy.get_param("~map_center_y", 0.0)
+        if (map_center_x is None) != (map_center_y is None):
+            raise ValueError("Set both ~map_center_x and ~map_center_y, or neither.")
+        self.map_center_pose = (
+            (float(map_center_x), float(map_center_y))
+            if map_center_x is not None
+            else None
+        )
         self.fusion = StreamingSourceMapFusion(
-            map_size_m=float(rospy.get_param("~map_size_m", 30.0)),
+            map_size_m=float(rospy.get_param("~map_size_m", 12.0)),
             res=resolution,
             node_res=float(rospy.get_param("~argmax_resolution", resolution)),
             sigma_Q_cells=float(rospy.get_param("~sigma_Q_cells", 0.0)),
@@ -99,7 +108,7 @@ class SSLNetAudioMapFusionNode:
 
             self.tf_broadcaster = tf2_ros.TransformBroadcaster()
 
-        odom_topic = rospy.get_param("~odom_topic", "/lio/odom")
+        odom_topic = rospy.get_param("~odom_topic", "/Odometry")
         prediction_topic = rospy.get_param(
             "~prediction_topic", "/sslnet_audio_inference/prediction_json"
         )
@@ -189,7 +198,7 @@ class SSLNetAudioMapFusionNode:
         from std_srvs.srv import EmptyResponse
 
         with self.fusion_lock:
-            self.fusion.reset(clear_bins=False)
+            self.fusion.reset(new_center_pose=self.map_center_pose, clear_bins=False)
             with self.lock:
                 self.robot_path.clear()
                 self.processed_stamp = None
@@ -340,6 +349,8 @@ class SSLNetAudioMapFusionNode:
                 float(summary.get("doa_confidence", 1.0)),
                 float(summary.get("distance_confidence", 1.0)),
             )
+            if not self.fusion.inited and self.map_center_pose is not None:
+                self.fusion.reset(new_center_pose=self.map_center_pose, clear_bins=False)
             output = self.fusion.update_frame(
                 pred_theta=ssl_doa_to_fusion_distribution(doa),
                 pred_r=distance,

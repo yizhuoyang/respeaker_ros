@@ -16,5 +16,10 @@ vis_*
 audio_data/
 reports/
 data/
+*.engine
+*.onnx
+*.pt
+*.ts
+
 
 

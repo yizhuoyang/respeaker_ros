@@ -1,5 +1,8 @@
 # SSLNet ROS1 实时音频推理与可视化
 
+总流程入口见仓库根目录 [`README.md`](../README.md)；RGB-D YOLOE visual map 与
+audio/visual/LiDAR 联合叠加见 [`deploy_yolo/README.md`](../deploy_yolo/README.md)。
+
 你提到的 `ros_infer` 功能在当前仓库中实现为 `deploy/` 目录。本目录将已经训练好的
 `SSLNet_DOA` 音频模型连接到 ROS1 的实时 ReSpeaker 音频流，输出目标方向
 （DOA）和距离（distance）的概率分布以及峰值预测。
@@ -475,17 +478,15 @@ ROS map: x/y 平面与 odom yaw
 因此发布的全局声源 argmax 可直接与 ROS odom 地图或已变换到 odom frame 的 LiDAR 点云
 叠加。
 
-在音频推理节点与 odom topic 已经运行时启动：
+默认实时配置订阅 `/Odometry`，并使用与 visual map 一致的固定地图中心 `(0.0, 0.0)`、
+`12.0 m x 12.0 m` 地图和 `0.05 m/cell` 分辨率。在音频推理节点与 odom topic
+已经运行时直接启动：
 
 ```bash
 source /opt/ros/noetic/setup.bash
 cd /home/kemove/yyz/audio-nav/respeaker_ros
 
-python deploy/ros1_sslnet_audio_map_fusion.py \
-  _odom_topic:=/lio/odom \
-  _map_size_m:=30.0 \
-  _resolution:=0.10 \
-  _max_distance_m:=6.0
+python deploy/ros1_sslnet_audio_map_fusion.py
 ```
 
 发布 topic：
@@ -530,7 +531,7 @@ LiDAR 点云                 环境与目标几何位置
 
 ```bash
 python deploy/ros1_sslnet_audio_map_fusion.py \
-  _odom_topic:=/lio/odom \
+  _odom_topic:=/Odometry \
   _robot_path_length:=3000
 ```
 
@@ -539,12 +540,11 @@ python deploy/ros1_sslnet_audio_map_fusion.py \
 `livox_frame` 的实时 TF。
 
 `_broadcast_odom_tf` 不是通常需要打开的选项。只有确认 TF 树中没有这一条变换，并且
-`/lio/odom` 的 pose 确实就是 `livox_frame` 在全局 frame 下的位姿时，才可以测试由
+`/Odometry` 的 pose 确实就是 `livox_frame` 在全局 frame 下的位姿时，才可以测试由
 audio map 节点广播 TF：
 
 ```bash
 python deploy/ros1_sslnet_audio_map_fusion.py \
-  _odom_topic:=/lio/odom \
   _broadcast_odom_tf:=true \
   _sensor_frame_id:=livox_frame
 ```
@@ -556,14 +556,14 @@ python deploy/ros1_sslnet_audio_map_fusion.py \
 ### 在 `livox_frame` 中同时观察点云与 Audio Map
 
 如果希望 RViz 的观察坐标统一显示为 LiDAR 当前坐标系，应让 audio map 继续发布在
-`/lio/odom/header.frame_id` 给出的全局 frame 下，并将 RViz 的 `Fixed Frame` 改为
+`/Odometry/header.frame_id` 给出的全局 frame 下，并将 RViz 的 `Fixed Frame` 改为
 `livox_frame`。RViz 会通过 TF 将历史 audio map、声源点和机器人轨迹转换到当前
 LiDAR 视角；原始 LiDAR 点云本身已经位于 `livox_frame`。
 
 首先确认两个 frame：
 
 ```bash
-rostopic echo -n 1 /lio/odom/header/frame_id
+rostopic echo -n 1 /Odometry/header.frame_id
 rostopic echo -n 1 /livox/points_rviz/header/frame_id
 ```
 
@@ -571,8 +571,7 @@ rostopic echo -n 1 /livox/points_rviz/header/frame_id
 广播 TF：
 
 ```bash
-python deploy/ros1_sslnet_audio_map_fusion.py \
-  _odom_topic:=/lio/odom
+python deploy/ros1_sslnet_audio_map_fusion.py
 ```
 
 在 RViz 中沿用当前显示正确的 `Fixed Frame`，并使用 marker heatmap：
@@ -596,7 +595,6 @@ rosservice call /sslnet_audio_map/reset
 
 ```bash
 python deploy/ros1_sslnet_audio_map_fusion.py \
-  _odom_topic:=/lio/odom \
   _heatmap_marker_threshold:=0.08 \
   _heatmap_marker_max_cells:=6000 \
   _heatmap_marker_height:=0.02
@@ -617,7 +615,7 @@ rostopic echo -n 1 /sslnet_audio_map/status
 `waiting_for` 的含义：
 
 ```text
-odom                              未收到 /lio/odom
+odom                              未收到默认 /Odometry 或指定的 odom topic
 prediction_json                   未收到真实或 fake 推理摘要
 doa_distribution                  未收到 DOA 分布
 distance_distribution             未收到 distance 分布
@@ -629,7 +627,7 @@ new_prediction_distribution       当前预测已处理，等待下一帧
 确认各输入确实存在：
 
 ```bash
-rostopic hz /lio/odom
+rostopic hz /Odometry
 rostopic hz /sslnet_audio_inference/prediction_json
 rostopic hz /sslnet_audio_inference/doa_distribution
 rostopic hz /sslnet_audio_inference/distance_distribution
@@ -639,15 +637,16 @@ rostopic hz /sslnet_audio_inference/distance_distribution
 
 ```bash
 python deploy/ros1_sslnet_audio_map_fusion.py \
-  _odom_topic:=/lio/odom \
-  _map_size_m:=30.0 \
-  _resolution:=0.10 \
+  _map_size_m:=12.0 \
+  _resolution:=0.05 \
   _beta_r:=0.2 \
   _sigma_Q_cells:=1.0 \
   _min_confidence:=0.05
 ```
 
 - `_map_size_m` 和 `_resolution`：全局方形地图边长与格子分辨率。
+- `_map_center_x` 和 `_map_center_y`：固定全局地图中心，默认均为 `0.0`；与 visual map
+  的默认值一致，两张地图不需要互相订阅也能严格逐格叠加。
 - `_beta_r`：distance 分布在融合中的影响，越大越依赖距离预测。
 - `_sigma_Q_cells`：每次更新前的空间扩散量，允许声源位置有轻微不确定性。
 - `_min_confidence`：DOA 和 distance 峰值置信度的较小值低于该阈值时跳过当前更新。
@@ -705,8 +704,8 @@ python deploy/ros1_sslnet_fake_prediction.py \
 ```bash
 python deploy/ros1_sslnet_audio_map_fusion.py \
   _odom_topic:=/lio/odom \
-  _map_size_m:=30.0 \
-  _resolution:=0.10 \
+  _map_size_m:=12.0 \
+  _resolution:=0.05 \
   _max_distance_m:=6.0 \
   _min_confidence:=0.0
 ```
@@ -794,6 +793,33 @@ python deploy/ros1_sslnet_fake_prediction.py \
 如果某些帧到最终声源位置的距离超过 `_max_distance_m`，模拟距离会被裁剪，融合验证不再
 等价于完整真实距离。此时应增大 fake 节点和 audio map 节点两侧一致的
 `_max_distance_m`。
+
+## 8. 与 YOLOE Visual Map 联合运行
+
+`deploy_yolo/ros1_yoloe_visual_map.py` 会将 RGB-D 检测目标累计为全局视觉占据图。两张
+地图默认都使用 `12.0 m x 12.0 m` 与 `0.05 m/cell`，默认固定中心也均为
+`(0.0, 0.0)`，当前实时配置可直接启动并叠加：
+
+```bash
+python deploy/ros1_sslnet_audio_map_fusion.py
+
+python deploy_yolo/ros1_yoloe_visual_map.py
+```
+
+其中 visual map 默认加载 `deploy_yolo/yoloe-11s-seg.engine`，订阅注册深度
+`/camera/depth/image_rect_raw`，采用 `_conf:=0.50` 与 `_max_depth_m:=4.0`。
+若回放 `/lio/odom` 的 bag，请在两个节点均显式追加 `_odom_topic:=/lio/odom`。
+
+在 RViz 中添加：
+
+```text
+MarkerArray: /sslnet_audio_map/markers
+MarkerArray: /yoloe_visual_map/markers
+PointCloud2: /livox/points_rviz
+```
+
+visual map 的相机内参、对齐深度、TensorRT engine、marker 与排障说明请查阅
+[`deploy_yolo/README.md`](../deploy_yolo/README.md)。
 
 ## 参数覆盖与训练一致性
 

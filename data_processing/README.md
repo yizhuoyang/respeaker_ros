@@ -1,5 +1,9 @@
 # ROS2 Bag Data Extraction
 
+总流程入口见仓库根目录 [`README.md`](../README.md)；生成训练数据后，SSLNet 实时音频
+部署与 audio map 参见 [`deploy/README.md`](../deploy/README.md)，RGB-D visual map
+参见 [`deploy_yolo/README.md`](../deploy_yolo/README.md)。
+
 这个目录用于把 ROS2 bag 中的图像、里程计和 Livox 点云提取到普通文件夹。
 
 脚本：
@@ -867,55 +871,73 @@ python model_training/test_deepmusic_synced.py \
   --save-csv reports/deepmusic_clock_test.csv
 ```
 
-如果训练时使用了运动冲击抑制，测试时也要加同样的预处理：
+## 将数据交给 SSLNet 训练与测试
+
+生成 `synced_dataset` 或准备好 `pairs_ros1` 后，当前 ROS 音频部署路径应训练
+`--model audio` 模型。以下为 IPD 特征的基础示例：
 
 ```bash
-python data_processing/sync_from_bag_and_audio.py \
-  --bag /media/kemove/T9/bag/new \
-  --audio /home/kemove/yyz/audio-nav/ws_col/audio_data/signal\
-  --output synced_dataset \
-  --topics color,depth,lio_odom \
-  --segment-sec 0.5 \
-  --hop-sec 0.2
-```
-
-
-```bash
-
-python data_processing/split_noise_audio.py \
-  --input-dir audio_data/noise \
-  --output-dir synced_dataset \
-  --segment-sec 0.5 \
-  --hop-sec 0.2 \
-  --overwrite
-
-```
-
-输出会打印 spectrum MSE，以及 soft-argmax 和 peak-bin 两种角度误差。
-
-
 python main_doa.py \
   --data-root synced_dataset \
-  --object-name clock \
   --model audio \
   --odom lio_odom \
-  --audio-feat spec \
+  --audio-feat ipd \
+  --audio-channels 1,2,3,4 \
+  --ipd-pairs 0-1,0-2,0-3,1-2,1-3,2-3 \
+  --allow-missing-depth \
+  --epochs 80 \
+  --batch-size 16 \
+  --lr 1e-4 \
+  --lr-scheduler cosine \
+  --save-dir weights/ssl_audio \
+  --log-dir runs/ssl_audio
+```
+
+若训练时启用了固定滤波与运动冲击抑制，测试也应启用同样的滤波处理；`time mask`
+仅用于训练增强，测试时不启用：
+
+```bash
+python main_doa.py \
+  --data-root synced_dataset \
+  --model audio \
+  --audio-feat ipd \
   --audio-channels 1,2,3,4 \
   --allow-missing-depth \
-  --use-classification \
-  --freeze-classifier \
-  --classification-weight 0.0 \
-  --distance-weight 0.5 \
-  --max-signal-abs 0.06 \
-  --checkpoint weights/ssl_clock_cls_only/best_model.pth \
-  --epochs 80 \
-  --batch-size 64 \
-  --lr 1e-4 \
-  --save-dir weights/ssl_clock_doa_gated \
-  --log-dir runs/ssl_clock_doa_gated
-  --val-clocks clock2
+  --use-filter-mute-denoise \
+  --use-time-mask \
+  --save-dir weights/ssl_audio_filtered \
+  --log-dir runs/ssl_audio_filtered
 
-  python data_processing/infer_audio_class_labels.py \
+python test_doa.py \
+  --data-root synced_dataset \
+  --eval-split val \
+  --model audio \
+  --odom lio_odom \
+  --audio-feat ipd \
+  --audio-channels 1,2,3,4 \
+  --ipd-pairs 0-1,0-2,0-3,1-2,1-3,2-3 \
+  --allow-missing-depth \
+  --use-filter-mute-denoise \
+  --checkpoint weights/ssl_audio_filtered/best_model.pth \
+  --indices all \
+  --predictions-csv reports/ssl_audio_filtered_predictions.csv
+```
+
+`main_doa.py` 在训练和验证阶段输出 `DOA peak MAE`；`test_doa.py` 输出逐样本角度误差
+以及汇总的 `Peak DOA MAE`、`Peak distance MAE`。
+
+如果需要训练声音类别分支并为数据生成类别标签，类别定义为：
+
+```text
+0: robot_noise
+1: moving_sound
+2: signal_static
+```
+
+推断类别标签示例：
+
+```bash
+python data_processing/infer_audio_class_labels.py \
   --data-root synced_dataset \
   --checkpoint weights/ssl_person_cls_only/best_model.pth \
   --model audio \
@@ -924,24 +946,7 @@ python main_doa.py \
   --output-dir-name class \
   --overwrite \
   --no-save-probs
+```
 
-
-  0: robot_noise
-  1: moving_sound
-  2: signal_static
-
-  python test_doa.py \
-  --data-root synced_dataset \
-  --object-name clock \
-  --val-clocks clock7 \
-  --eval-split val \
-  --model audio \
-  --odom lio_odom \
-  --audio-feat ipd \
-  --audio-channels 1,2,3,4 \
-  --ipd-pairs 0-1,0-2,0-3,1-2,1-3,2-3 \
-  --audio-bandpass-low-hz 4000 \
-  --audio-bandpass-high-hz 6000 \
-  --allow-missing-depth \
-  --checkpoint weights/ssl_clock_4000_6000_ipd/last_model.pth \
-  --indices all 
+使用训练好的 audio checkpoint 进行 ROS 实时推理、全局 audio map 与 YOLOE visual map
+叠加的完整运行命令见仓库根目录 [`README.md`](../README.md)。
