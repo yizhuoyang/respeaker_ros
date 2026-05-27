@@ -13,6 +13,9 @@ audio/visual/LiDAR 联合叠加见 [`deploy_yolo/README.md`](../deploy_yolo/READ
 deploy/
 ├── sslnet_realtime.py          # 与 ROS 无关的模型加载、特征提取、滑动窗口推理核心
 ├── ros1_sslnet_audio_node.py   # ROS1 订阅音频并发布预测结果的节点
+├── export_sslnet_tensorrt.py   # 将 audio-only .pth 导出为 ONNX/TensorRT engine
+├── sslnet_engine_realtime.py   # TensorRT engine 推理核心
+├── ros1_sslnet_audio_engine_node.py # 使用 engine 发布相同 ROS 推理 topic
 ├── ros1_sslnet_visualizer.py   # ROS1 在线 matplotlib 可视化节点
 ├── ros1_sslnet_rviz_markers.py # 在 RViz/LiDAR 点云中叠加预测 marker
 ├── ros1_livox_custom_to_pointcloud2.py # Livox CustomMsg 转 RViz 点云
@@ -27,6 +30,8 @@ deploy/
 | --- | --- | --- |
 | `sslnet_realtime.py` | 从 checkpoint 恢复模型及训练预处理参数；将一段多通道音频转换为特征；输出 DOA/distance 概率 | 编写新的部署应用或不通过 ROS 做调用时 |
 | `ros1_sslnet_audio_node.py` | 累积实时音频片段，按窗口触发推理并发布 ROS topic | 在线推理时必须运行 |
+| `export_sslnet_tensorrt.py` | 从 audio-only checkpoint 导出 ONNX、TensorRT engine 及预处理 metadata | 使用 TensorRT 加速部署前运行一次 |
+| `ros1_sslnet_audio_engine_node.py` | 与 `.pth` 节点发布相同 topic，但网络前向由 TensorRT engine 执行 | 已导出 engine 后替代 `.pth` 节点 |
 | `ros1_sslnet_visualizer.py` | 订阅推理输出，以极坐标、概率曲线和俯视图实时展示结果 | 需要观察模型输出时运行 |
 | `ros1_sslnet_rviz_markers.py` | 将预测转为 RViz 箭头、点、距离圆及分布 marker | 与 LiDAR 点云叠加验证时运行 |
 | `ros1_livox_custom_to_pointcloud2.py` | 将运行中的 Livox `CustomMsg` 转为 `PointCloud2` | 不能重启 LiDAR 驱动时运行 |
@@ -210,6 +215,83 @@ python deploy/ros1_sslnet_audio_node.py \
 pkill -TERM -f "deploy/ros1_sslnet_audio_node.py"
 sleep 1
 pkill -KILL -f "deploy/ros1_sslnet_audio_node.py"
+```
+
+### 使用 TensorRT engine 替代 `.pth` 前向
+
+TensorRT 版本仍在 CPU 侧执行与训练一致的音频预处理与 IPD 特征提取，只将
+`SSLNet_DOA` 网络前向从 PyTorch 替换为 engine。它发布与
+`ros1_sslnet_audio_node.py` 完全相同的 `/sslnet_audio_inference/*` topic，
+所以后续的 visualizer、RViz marker 与 `ros1_sslnet_audio_map_fusion.py` 不需要修改。
+
+在包含 CUDA、`onnx` 和 Python `tensorrt` 的 TensorRT 环境中，将当前权重导出为
+FP32 engine。FP32 更适合首先验证 DOA 峰值与 `.pth` 一致；脚本可直接使用 TensorRT
+Python Builder，如已安装 `trtexec` 也可使用该可执行程序：
+
+```bash
+cd /home/kemove/yyz/audio-nav/respeaker_ros
+
+python deploy/export_sslnet_tensorrt.py \
+  --checkpoint weights/pairs_ros1_sslnet_audio/best_model.pth \
+  --onnx weights/pairs_ros1_sslnet_audio/best_model.onnx \
+  --engine weights/pairs_ros1_sslnet_audio/best_model.engine \
+  --window-seconds 1.0 \
+  --device cuda:0 \
+  --builder python
+```
+
+导出结果包括：
+
+```text
+weights/pairs_ros1_sslnet_audio/best_model.onnx
+weights/pairs_ros1_sslnet_audio/best_model.engine
+weights/pairs_ros1_sslnet_audio/best_model.engine.json
+```
+
+`.engine.json` 保存 `audio_feat`、麦克风通道、IPD pairs、滤波参数与固定输入 shape，
+运行 engine 节点时必须与 `.engine` 一同保留。当前 `best_model.pth` 使用的 1 秒输入
+shape 为 `(1, 12, 257, 101)`，输出为 `360` 维 DOA logits 与 `120` 维 distance logits。
+
+如果 FP32 输出核对无误、并且更关注速度，可另导出 FP16 版本：
+
+```bash
+python deploy/export_sslnet_tensorrt.py \
+  --checkpoint weights/pairs_ros1_sslnet_audio/best_model.pth \
+  --onnx weights/pairs_ros1_sslnet_audio/best_model_fp16.onnx \
+  --engine weights/pairs_ros1_sslnet_audio/best_model_fp16.engine \
+  --window-seconds 1.0 \
+  --device cuda:0 \
+  --builder python \
+  --fp16
+```
+
+FP16 可能在接近持平的 DOA bins 之间改变 argmax，使用前应在真实录音上与 FP32 或
+`.pth` 对比误差。
+
+启动 TensorRT 实时推理：
+
+```bash
+python deploy/ros1_sslnet_audio_engine_node.py \
+  _engine:=$(pwd)/weights/pairs_ros1_sslnet_audio/best_model.engine \
+  _device:=cuda:0 \
+  _window_seconds:=1.0 \
+  _hop_seconds:=0.5
+```
+
+节点已有相同路径的默认 engine，因此导出到上述位置后也可简写为：
+
+```bash
+python deploy/ros1_sslnet_audio_engine_node.py _hop_seconds:=0.5
+```
+
+engine 输入 shape 与导出窗口绑定：若希望用 `0.5 s` 输入，需要以
+`--window-seconds 0.5` 另行导出 engine；`_hop_seconds` 仅控制更新频率，可以小于
+导出窗口。
+
+随后仍直接启动同一个 audio map 融合节点：
+
+```bash
+python deploy/ros1_sslnet_audio_map_fusion.py
 ```
 
 ## 3. 查看数值结果

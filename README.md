@@ -34,6 +34,8 @@ model_training/train_doa.py         训练/验证循环，打印 DOA peak MAE
 dataloader/ssl_dataset.py           synced_dataset 与 pairs_ros1 数据读取
 
 deploy/ros1_sslnet_audio_node.py    实时音频模型推理
+deploy/export_sslnet_tensorrt.py    SSLNet checkpoint 导出 TensorRT engine
+deploy/ros1_sslnet_audio_engine_node.py TensorRT 实时音频模型推理
 deploy/ros1_sslnet_fake_prediction.py 无模型时生成模拟分布
 deploy/ros1_sslnet_audio_map_fusion.py 全局 audio map 融合
 deploy/ros1_livox_custom_to_pointcloud2.py Livox CustomMsg 转 RViz 点云
@@ -217,6 +219,27 @@ python deploy/ros1_sslnet_audio_node.py \
   _window_seconds:=1.0 \
   _hop_seconds:=0.5
 ```
+
+如需将网络前向改为 TensorRT，先在含 `onnx`、Python TensorRT 与 CUDA 的环境中导出：
+
+```bash
+python deploy/export_sslnet_tensorrt.py \
+  --checkpoint weights/pairs_ros1_sslnet_audio/best_model.pth \
+  --onnx weights/pairs_ros1_sslnet_audio/best_model.onnx \
+  --engine weights/pairs_ros1_sslnet_audio/best_model.engine \
+  --window-seconds 1.0 \
+  --device cuda:0 \
+  --builder python
+
+python deploy/ros1_sslnet_audio_engine_node.py \
+  _engine:=$(pwd)/weights/pairs_ros1_sslnet_audio/best_model.engine \
+  _device:=cuda:0 \
+  _window_seconds:=1.0 \
+  _hop_seconds:=0.5
+```
+
+engine 节点发布与 `.pth` 节点相同的预测 topic，因此下面的 audio map 启动命令不变。
+导出还会产生 `best_model.engine.json` 预处理 metadata；它必须随 engine 一同部署。
 
 启动 audio map：
 
