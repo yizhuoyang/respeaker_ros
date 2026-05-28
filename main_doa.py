@@ -104,6 +104,21 @@ def parse_args():
     parser.add_argument("--time-mask-num", type=int, default=1)
     parser.add_argument("--time-mask-max-width", type=int, default=12, help="Maximum masked feature frames per mask.")
     parser.add_argument("--time-mask-fill", default="zero", choices=["zero", "mean"])
+    parser.add_argument("--noise-aug", action="store_true", help="Enable train-only real noise mixing augmentation before feature extraction.")
+    parser.add_argument(
+        "--noise-aug-root",
+        default=None,
+        help="Directory containing noise wav files. Defaults to <data-root>/noise when it exists.",
+    )
+    parser.add_argument(
+        "--noise-aug-path",
+        action="append",
+        default=None,
+        help="Specific noise wav file or directory. Can be repeated.",
+    )
+    parser.add_argument("--noise-aug-prob", type=float, default=1.0, help="Probability of applying noise augmentation to each training sample.")
+    parser.add_argument("--snr-min-db", type=float, default=0.0, help="Minimum random SNR for noise augmentation.")
+    parser.add_argument("--snr-max-db", type=float, default=25.0, help="Maximum random SNR for noise augmentation.")
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--use-compress", action="store_true")
     parser.add_argument(
@@ -195,6 +210,12 @@ def build_dataset(root, args, is_train=False):
         time_mask_num=args.time_mask_num,
         time_mask_max_width=args.time_mask_max_width,
         time_mask_fill=args.time_mask_fill,
+        noise_aug_enabled=is_train and args.noise_aug,
+        noise_aug_paths=args.noise_aug_path,
+        noise_aug_root=args.noise_aug_root,
+        noise_aug_prob=args.noise_aug_prob,
+        noise_aug_snr_min_db=args.snr_min_db,
+        noise_aug_snr_max_db=args.snr_max_db,
         object_names=args.object_name,
         min_distance=args.min_distance,
         max_distance=args.max_distance,
@@ -214,7 +235,8 @@ def build_loaders(args):
         val_dataset = build_dataset_with_split(args.data_root, args, split="test", is_train=False)
     else:
         full_dataset = build_dataset(args.data_root, args, is_train=False)
-        train_source = build_dataset(args.data_root, args, is_train=True) if args.use_time_mask else full_dataset
+        has_train_only_aug = args.use_time_mask or args.noise_aug
+        train_source = build_dataset(args.data_root, args, is_train=True) if has_train_only_aug else full_dataset
         if args.val_clocks:
             train_indices, val_indices = split_indices_by_clocks(full_dataset, args.val_clocks)
             train_dataset = Subset(train_source, train_indices)
@@ -297,6 +319,12 @@ def build_dataset_with_split(root, args, split, is_train=False):
         time_mask_num=args.time_mask_num,
         time_mask_max_width=args.time_mask_max_width,
         time_mask_fill=args.time_mask_fill,
+        noise_aug_enabled=is_train and args.noise_aug,
+        noise_aug_paths=args.noise_aug_path,
+        noise_aug_root=args.noise_aug_root,
+        noise_aug_prob=args.noise_aug_prob,
+        noise_aug_snr_min_db=args.snr_min_db,
+        noise_aug_snr_max_db=args.snr_max_db,
         object_names=args.object_name,
         min_distance=args.min_distance,
         max_distance=args.max_distance,
@@ -465,6 +493,13 @@ def main():
     ipd_pairs = parse_channel_pairs(args.ipd_pairs)
     audio_in_channels = infer_audio_in_channels(args.audio_feat, audio_channels, ipd_pairs)
     print(f"Audio feature: {args.audio_feat}, input channels: {audio_in_channels}")
+    if args.noise_aug:
+        noise_root = args.noise_aug_root or str(Path(args.data_root) / "noise")
+        print(
+            "Noise augmentation: "
+            f"prob={args.noise_aug_prob:g}, snr=[{args.snr_min_db:g}, {args.snr_max_db:g}] dB, "
+            f"root={noise_root}, extra_paths={args.noise_aug_path or []}"
+        )
 
     train_dataset, val_dataset, train_loader, val_loader = build_loaders(args)
     print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")

@@ -106,6 +106,12 @@ class SingleStepDataset(Dataset):
         time_mask_num=1,
         time_mask_max_width=12,
         time_mask_fill="zero",
+        noise_aug_enabled=False,
+        noise_aug_paths=None,
+        noise_aug_root=None,
+        noise_aug_prob=1.0,
+        noise_aug_snr_min_db=0.0,
+        noise_aug_snr_max_db=25.0,
         split=None,
         object_names=None,
         min_distance=None,
@@ -159,6 +165,14 @@ class SingleStepDataset(Dataset):
         self.time_mask_num = time_mask_num
         self.time_mask_max_width = time_mask_max_width
         self.time_mask_fill = time_mask_fill
+        self.noise_aug_enabled = bool(noise_aug_enabled)
+        self.noise_aug_prob = float(noise_aug_prob)
+        if not 0.0 <= self.noise_aug_prob <= 1.0:
+            raise ValueError("noise_aug_prob must be between 0 and 1")
+        self.noise_aug_snr_min_db = float(noise_aug_snr_min_db)
+        self.noise_aug_snr_max_db = float(noise_aug_snr_max_db)
+        if self.noise_aug_snr_min_db > self.noise_aug_snr_max_db:
+            raise ValueError("noise_aug_snr_min_db must be <= noise_aug_snr_max_db")
         self.split = split
         self.object_names = parse_name_filter(object_names)
         self.min_distance = min_distance
@@ -171,6 +185,8 @@ class SingleStepDataset(Dataset):
         self.skipped_by_signal_amplitude = 0
         self._stationary_noise_profile_by_sample_rate = {}
         self._motion_noise_profile_by_sample_rate = {}
+        self.noise_aug_paths = self._resolve_noise_aug_paths(noise_aug_paths, noise_aug_root)
+        self._noise_aug_cache = {}
 
         self.file_list = self._collect_samples()
         if not self.file_list:
@@ -185,6 +201,12 @@ class SingleStepDataset(Dataset):
             print(
                 f"[SingleStepDataset] split={self.split}: skipped "
                 f"{self.skipped_by_signal_amplitude} signal samples with max_abs > {self.max_signal_abs}"
+            )
+        if self.noise_aug_enabled:
+            print(
+                f"[SingleStepDataset] split={self.split}: noise augmentation "
+                f"files={len(self.noise_aug_paths)} prob={self.noise_aug_prob:g} "
+                f"snr=[{self.noise_aug_snr_min_db:g}, {self.noise_aug_snr_max_db:g}] dB"
             )
 
     def _collect_samples(self):
@@ -350,6 +372,7 @@ class SingleStepDataset(Dataset):
         audio, sample_rate = load_audio_wav(item["audio"], self.audio_channels)
         audio = self._maybe_filter_mute_audio(audio, sample_rate)
         audio = self._maybe_denoise_audio(audio, sample_rate)
+        audio = self._maybe_apply_noise_augmentation(audio, sample_rate)
         audio = self._maybe_apply_audio_bandpass(audio, sample_rate)
         depth = (
             load_image(item["depth"], normalize_rgb=False, image_size=self.image_size)
@@ -457,6 +480,80 @@ class SingleStepDataset(Dataset):
         if self.transform is not None:
             sample = self.transform(sample)
         return sample
+
+    def _resolve_noise_aug_paths(self, noise_aug_paths, noise_aug_root):
+        paths = []
+        for value in noise_aug_paths or []:
+            candidate = Path(value).expanduser()
+            if candidate.is_dir():
+                paths.extend(sorted(candidate.glob("*.wav")))
+            else:
+                paths.append(candidate)
+        if noise_aug_root:
+            root = Path(noise_aug_root).expanduser()
+            paths.extend(sorted(root.glob("*.wav")) if root.is_dir() else [root])
+        if not paths:
+            default_root = self.root_dir / "noise"
+            if default_root.is_dir():
+                paths.extend(sorted(default_root.glob("*.wav")))
+        unique_paths = []
+        seen = set()
+        for path in paths:
+            resolved = path.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            if resolved.is_file():
+                unique_paths.append(resolved)
+        if self.noise_aug_enabled and not unique_paths:
+            raise RuntimeError(
+                "Noise augmentation is enabled, but no noise wav files were found. "
+                "Set --noise-aug-root or --noise-aug-path, or place wav files under <data-root>/noise."
+            )
+        return tuple(unique_paths)
+
+    def _load_noise_aug_audio(self, noise_path):
+        cache_key = str(noise_path)
+        if cache_key not in self._noise_aug_cache:
+            noise, sample_rate = load_audio_wav(noise_path, self.audio_channels)
+            self._noise_aug_cache[cache_key] = (noise.astype(np.float32), int(sample_rate))
+        return self._noise_aug_cache[cache_key]
+
+    def _sample_noise_segment(self, noise, target_frames):
+        if noise.shape[1] == target_frames:
+            return noise
+        if noise.shape[1] > target_frames:
+            start = np.random.randint(0, noise.shape[1] - target_frames + 1)
+            return noise[:, start:start + target_frames]
+        repeats = int(np.ceil(float(target_frames) / float(max(noise.shape[1], 1))))
+        tiled = np.tile(noise, (1, repeats))
+        return tiled[:, :target_frames]
+
+    def _maybe_apply_noise_augmentation(self, audio, sample_rate):
+        if (
+            not self.noise_aug_enabled
+            or not self.noise_aug_paths
+            or self.noise_aug_prob <= 0.0
+            or np.random.random() > self.noise_aug_prob
+        ):
+            return audio
+        noise_path = self.noise_aug_paths[np.random.randint(0, len(self.noise_aug_paths))]
+        noise, noise_sample_rate = self._load_noise_aug_audio(noise_path)
+        if int(noise_sample_rate) != int(sample_rate):
+            raise ValueError(
+                f"Noise sample_rate={noise_sample_rate} from {noise_path} does not match "
+                f"audio sample_rate={sample_rate}."
+            )
+        noise = self._sample_noise_segment(noise, audio.shape[1]).astype(np.float32)
+        signal_power = float(np.mean(np.square(audio)))
+        noise_power = float(np.mean(np.square(noise)))
+        if signal_power <= 1e-12 or noise_power <= 1e-12:
+            return audio
+        target_snr_db = np.random.uniform(self.noise_aug_snr_min_db, self.noise_aug_snr_max_db)
+        target_noise_power = signal_power / (10.0 ** (target_snr_db / 10.0))
+        scale = np.sqrt(target_noise_power / noise_power)
+        mixed = audio.astype(np.float32) + noise * scale
+        return np.clip(mixed, -1.0, 1.0).astype(np.float32)
 
     def _maybe_denoise_audio(self, audio, sample_rate):
         use_time_filters = self.denoise_highpass_hz > 0 or len(self.denoise_notches_hz) > 0

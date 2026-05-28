@@ -111,6 +111,10 @@ python main_doa.py \
   --lr 1e-4 \
   --lr-scheduler cosine \
   --min-lr-ratio 0.05 \
+  --noise-aug \
+  --noise-aug-root /home/kemove/yyz/AV-PedAware/data/pairs_ros1/noise \
+  --snr-min-db 0 \
+  --snr-max-db 25 \
   --device cuda:0 \
   --save-dir weights/pairs_ros1_sslnet_audio \
   --log-dir runs/pairs_ros1_sslnet_audio
