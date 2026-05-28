@@ -6,9 +6,6 @@ class SSLNet_DOA(nn.Module):
     def __init__(
         self,
         spec_out_dim=64,
-        depth_out_dim=64,
-        fusion_out_dim=256,
-        pretrained_depth_encoder=True,
         use_compress=True,        
         num_doa_bins=360,
         num_distance_bins=120,
@@ -33,6 +30,9 @@ class SSLNet_DOA(nn.Module):
             nn.Dropout(0.3),
             nn.Linear(128, num_doa_bins),
         )
+        self.doa_head = nn.Sequential(
+            nn.Linear(spec_out_dim, num_doa_bins),
+        )
         self.num_distance_bins = num_distance_bins
         self.distance_head = nn.Sequential(
             nn.Linear(spec_out_dim, 128),
@@ -40,24 +40,12 @@ class SSLNet_DOA(nn.Module):
             nn.Dropout(0.3),
             nn.Linear(128, num_distance_bins),
         )
-        self.class_head = None
-        if num_classes and num_classes > 0:
-            self.class_head = nn.Sequential(
-                nn.Linear(spec_out_dim, 128),
-                nn.ReLU(inplace=True),
-                nn.Dropout(0.3),
-                nn.Linear(128, num_classes),
-            )
-
 
     def forward(self, spectrogram, depth=None):
         spec_feat = self.spec_encoder(spectrogram)  
         
         doa_logits = self.doa_head(spec_feat)
         distance_logits = self.distance_head(spec_feat)
-        if self.class_head is not None:
-            class_logits = self.class_head(spec_feat)
-            return doa_logits, distance_logits, class_logits
         return doa_logits, distance_logits
 
 class SSLNet_depth_DOA(nn.Module):
