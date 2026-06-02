@@ -209,7 +209,9 @@ def parse_args():
     parser.add_argument("--filter-mute-threshold", type=float, default=0.06)
     parser.add_argument("--filter-mute-window-sec", type=float, default=0.05)
     parser.add_argument("--filter-mute-floor", type=float, default=0.02)
-    parser.add_argument("--print-samples", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--print-samples", dest="print_samples", action="store_true", help="Print sample-level evaluation logs.")
+    parser.add_argument("--no-print-samples", dest="print_samples", action="store_false", help="Do not print sample-level evaluation logs.")
+    parser.set_defaults(print_samples=True)
     parser.add_argument("--save-csv", default=None)
     return parser.parse_args()
 

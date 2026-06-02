@@ -68,7 +68,9 @@ def parse_args():
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--object-name", default=None, help="Optional prefix filter, e.g. clock/person/dryer. Noise dirs are still included with --include-noise.")
     parser.add_argument("--recursive", action="store_true", help="Search audio dirs recursively.")
-    parser.add_argument("--include-noise", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--include-noise", dest="include_noise", action="store_true", help="Include noise examples in the inference set.")
+    parser.add_argument("--no-include-noise", dest="include_noise", action="store_false", help="Exclude noise examples from the inference set.")
+    parser.set_defaults(include_noise=True)
     parser.add_argument("--model", default="audio", choices=["audio", "audio_depth"])
     parser.add_argument("--audio-feat", default="spec", choices=["ipd", "spec", "phase", "both", "gcc_phat_complex"])
     parser.add_argument("--audio-channels", default="1,2,3,4")
@@ -78,12 +80,9 @@ def parse_args():
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--output-dir-name", default="class")
     parser.add_argument("--overwrite", action="store_true")
-    parser.add_argument(
-        "--save-probs",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="If true, npy format is [pred_class, prob0, prob1, prob2]. If false, save only [pred_class].",
-    )
+    parser.add_argument("--save-probs", dest="save_probs", action="store_true", help="Save class probabilities along with predictions.")
+    parser.add_argument("--no-save-probs", dest="save_probs", action="store_false", help="Do not save class probabilities, only predictions.")
+    parser.set_defaults(save_probs=True)
     return parser.parse_args()
 
 

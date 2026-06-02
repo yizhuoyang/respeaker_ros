@@ -11,7 +11,7 @@ import numpy as np
 import torch
 from torch.utils.data import Subset, random_split
 
-from dataloader.ssl_dataset import CLASS_NAMES, SingleStepDataset
+from dataloader.ssl_dataset import CLASS_NAMES, SingleStepDataset, object_prefix
 from dataloader.utils import parse_channel_pairs
 from model_training.train_doa import combined_loss
 from network.audionet.ssl_net import SSLNet_DOA, SSLNet_depth_DOA
@@ -43,13 +43,25 @@ def parse_args():
     parser.add_argument("--checkpoint", default="weights/ssl_doa_distance_synced/best_model.pth")
     parser.add_argument("--model", default="audio_depth", choices=["audio", "audio_depth"])
     parser.add_argument("--indices", default="0,1,2,3,4,5,6,7,8,9")
-    parser.add_argument("--print-samples", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--print-samples", dest="print_samples", action="store_true", help="Print sample-level evaluation logs.")
+    parser.add_argument("--no-print-samples", dest="print_samples", action="store_false", help="Do not print sample-level evaluation logs.")
+    parser.set_defaults(print_samples=True)
     parser.add_argument("--save-vis", action="store_true", help="Save DOA and distance visualization images.")
     parser.add_argument("--vis-dir", default="vis_result_doa")
     parser.add_argument("--vis-dist-dir", default="vis_result_dist")
     parser.add_argument("--doa-vis", default="curve", choices=["curve", "polar"], help="Save one DOA visualization type.")
     parser.add_argument("--predictions-csv", default=None, help="Optional CSV output for predicted peaks and errors.")
     parser.add_argument("--distributions-npz", default=None, help="Optional NPZ output for full DOA/distance probability arrays.")
+    parser.add_argument(
+        "--object-stats-csv",
+        default="reports/object_error_stats.csv",
+        help="CSV output for per-object error summary. Set empty string to disable.",
+    )
+    parser.add_argument(
+        "--object-plots-dir",
+        default="reports/object_error_plots",
+        help="Directory for per-object error distribution plots. Set empty string to disable.",
+    )
     parser.add_argument("--audio-feat", default="ipd", choices=["ipd", "spec", "phase", "both", "gcc_phat_complex"])
     parser.add_argument("--audio-channels", default="1,2,3,4")
     parser.add_argument("--ipd-pairs", default="0-1,0-2,0-3,1-2,1-3,2-3")
@@ -360,8 +372,168 @@ def write_prediction_outputs(args, rows, doa_probabilities, distance_probabiliti
             doa_probabilities=np.asarray(doa_probabilities, dtype=np.float32),
             distance_probabilities=np.asarray(distance_probabilities, dtype=np.float32),
             paths=np.asarray([row["path"] for row in rows]),
+            objects=np.asarray([row["object"] for row in rows]),
+            sequences=np.asarray([row["sequence"] for row in rows]),
         )
         print(f"Distributions saved to {output_path}")
+
+
+def group_rows_by_object(rows):
+    groups = {}
+    for row in rows:
+        groups.setdefault(row["object"], []).append(row)
+    return dict(sorted(groups.items(), key=lambda item: item[0]))
+
+
+def summarize_errors(values):
+    values = np.asarray(values, dtype=np.float32)
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return {
+            "mae": np.nan,
+            "median": np.nan,
+            "std": np.nan,
+            "p90": np.nan,
+            "max": np.nan,
+        }
+    return {
+        "mae": float(np.mean(values)),
+        "median": float(np.median(values)),
+        "std": float(np.std(values)),
+        "p90": float(np.percentile(values, 90)),
+        "max": float(np.max(values)),
+    }
+
+
+def write_object_error_summary(args, rows):
+    if not rows:
+        return []
+    summary_rows = []
+    for object_name, object_rows in group_rows_by_object(rows).items():
+        doa = summarize_errors([row["doa_abs_error_deg"] for row in object_rows])
+        distance = summarize_errors([row["distance_abs_error_m"] for row in object_rows])
+        summary_rows.append({
+            "object": object_name,
+            "count": len(object_rows),
+            "doa_mae_deg": doa["mae"],
+            "doa_median_deg": doa["median"],
+            "doa_std_deg": doa["std"],
+            "doa_p90_deg": doa["p90"],
+            "doa_max_deg": doa["max"],
+            "distance_mae_m": distance["mae"],
+            "distance_median_m": distance["median"],
+            "distance_std_m": distance["std"],
+            "distance_p90_m": distance["p90"],
+            "distance_max_m": distance["max"],
+        })
+
+    print("\nPer-object peak error summary:")
+    for row in summary_rows:
+        print(
+            f"  {row['object']:<14s} n={row['count']:4d} "
+            f"DOA MAE={row['doa_mae_deg']:.3f} deg "
+            f"Dist MAE={row['distance_mae_m']:.3f} m "
+            f"DOA p90={row['doa_p90_deg']:.3f} deg "
+            f"Dist p90={row['distance_p90_m']:.3f} m"
+        )
+
+    if args.object_stats_csv:
+        output_path = Path(args.object_stats_csv)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(summary_rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(summary_rows)
+        print(f"Per-object error summary saved to {output_path}")
+    return summary_rows
+
+
+def plot_object_error_distributions(args, rows):
+    if not args.object_plots_dir or not rows:
+        return
+    output_dir = Path(args.object_plots_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    groups = group_rows_by_object(rows)
+    object_names = list(groups.keys())
+    doa_values = [
+        np.asarray([row["doa_abs_error_deg"] for row in groups[name]], dtype=np.float32)
+        for name in object_names
+    ]
+    distance_values = [
+        np.asarray([row["distance_abs_error_m"] for row in groups[name]], dtype=np.float32)
+        for name in object_names
+    ]
+    doa_values = [values[np.isfinite(values)] for values in doa_values]
+    distance_values = [values[np.isfinite(values)] for values in distance_values]
+
+    save_error_boxplot(
+        values=doa_values,
+        labels=object_names,
+        ylabel="DOA absolute error (deg)",
+        title="Per-object DOA Error Distribution",
+        save_path=output_dir / "object_doa_error_boxplot.png",
+    )
+    save_error_boxplot(
+        values=distance_values,
+        labels=object_names,
+        ylabel="Distance absolute error (m)",
+        title="Per-object Distance Error Distribution",
+        save_path=output_dir / "object_distance_error_boxplot.png",
+    )
+    save_error_hist_grid(
+        values=doa_values,
+        labels=object_names,
+        xlabel="DOA absolute error (deg)",
+        title="Per-object DOA Error Histograms",
+        save_path=output_dir / "object_doa_error_hist.png",
+    )
+    save_error_hist_grid(
+        values=distance_values,
+        labels=object_names,
+        xlabel="Distance absolute error (m)",
+        title="Per-object Distance Error Histograms",
+        save_path=output_dir / "object_distance_error_hist.png",
+    )
+    print(f"Per-object error plots saved to {output_dir}")
+
+
+def save_error_boxplot(values, labels, ylabel, title, save_path):
+    non_empty = [(label, value) for label, value in zip(labels, values) if len(value)]
+    if not non_empty:
+        return
+    labels, values = zip(*non_empty)
+    plt.figure(figsize=(max(8, len(labels) * 1.1), 4.5))
+    plt.boxplot(values, labels=labels, showfliers=False)
+    plt.ylabel(ylabel)
+    plt.title(title)
+    plt.grid(True, axis="y", linestyle="--", alpha=0.4)
+    plt.xticks(rotation=35, ha="right")
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=160)
+    plt.close()
+
+
+def save_error_hist_grid(values, labels, xlabel, title, save_path):
+    non_empty = [(label, value) for label, value in zip(labels, values) if len(value)]
+    if not non_empty:
+        return
+    labels, values = zip(*non_empty)
+    cols = min(3, len(labels))
+    rows = int(np.ceil(len(labels) / cols))
+    plt.figure(figsize=(cols * 4.0, rows * 3.0))
+    for index, (label, value) in enumerate(zip(labels, values), start=1):
+        ax = plt.subplot(rows, cols, index)
+        ax.hist(value, bins=min(30, max(8, int(np.sqrt(len(value))))), alpha=0.85)
+        ax.axvline(float(np.mean(value)), color="C3", linestyle="--", linewidth=1.5, label="mean")
+        ax.set_title(f"{label} (n={len(value)})")
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel("count")
+        ax.grid(True, linestyle="--", alpha=0.3)
+        ax.legend(fontsize=8)
+    plt.suptitle(title)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=160)
+    plt.close()
 
 
 def main():
@@ -447,10 +619,12 @@ def main():
             distance_axis = np.linspace(0.0, 6.0, len(pred_dist_np), dtype=np.float32)
             pred_distance_m = float(distance_axis[int(pred_dist_np.argmax())])
             gt_distance_m = float(sample["distance"][0].item())
+            sequence_name = Path(sample["dataset_dir"]).name
             prediction_rows.append({
                 "index": idx,
                 "sample_id": sample["sample_id"],
-                "sequence": Path(sample["dataset_dir"]).name,
+                "object": object_prefix(sequence_name),
+                "sequence": sequence_name,
                 "path": sample["path"],
                 "gt_doa_bin_deg": gt_doa_bin,
                 "pred_doa_bin_deg": pred_doa_bin,
@@ -513,6 +687,8 @@ def main():
         mean_distance_error = np.mean([row["distance_abs_error_m"] for row in prediction_rows])
         print(f"Peak DOA MAE: {mean_doa_error:.3f} deg | Peak distance MAE: {mean_distance_error:.3f} m")
         write_prediction_outputs(args, prediction_rows, doa_probabilities, distance_probabilities)
+        write_object_error_summary(args, prediction_rows)
+        plot_object_error_distributions(args, prediction_rows)
     if class_total:
         print(f"Classification accuracy: {class_correct / class_total:.6f} ({class_correct}/{class_total})")
         for class_id, class_name in enumerate(CLASS_NAMES):

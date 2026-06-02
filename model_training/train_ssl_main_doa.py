@@ -62,7 +62,9 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--balanced-sampler", action="store_true")
 
-    parser.add_argument("--use-filter-mute-denoise", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--use-filter-mute-denoise", dest="use_filter_mute_denoise", action="store_true", help="Enable fixed robot filter + motion-impact muting.")
+    parser.add_argument("--no-use-filter-mute-denoise", dest="use_filter_mute_denoise", action="store_false", help="Disable fixed robot filter + motion-impact muting.")
+    parser.set_defaults(use_filter_mute_denoise=True)
     parser.add_argument("--filter-mute-highpass-hz", type=float, default=120.0)
     parser.add_argument(
         "--filter-mute-notches-hz",
@@ -73,7 +75,9 @@ def parse_args():
     parser.add_argument("--filter-mute-floor", type=float, default=0.02)
     parser.add_argument("--filter-mute-edge-smooth-ms", type=float, default=5.0)
 
-    parser.add_argument("--use-time-mask", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--use-time-mask", dest="use_time_mask", action="store_true", help="Enable time masking augmentation.")
+    parser.add_argument("--no-use-time-mask", dest="use_time_mask", action="store_false", help="Disable time masking augmentation.")
+    parser.set_defaults(use_time_mask=True)
     parser.add_argument("--time-mask-prob", type=float, default=0.5)
     parser.add_argument("--time-mask-num", type=int, default=1)
     parser.add_argument("--time-mask-max-width", type=int, default=12)

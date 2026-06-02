@@ -118,6 +118,29 @@ python main_doa.py \
   --device cuda:0 \
   --save-dir weights/pairs_ros1_sslnet_audio \
   --log-dir runs/pairs_ros1_sslnet_audio
+
+
+
+
+python main_doa.py \
+  --data-root /home/kemove/yyz/AV-PedAware/data/av_nav_pairs \
+  --model audio \
+  --audio-feat ipd \
+  --audio-channels 1,2,3,4 \
+  --ipd-pairs 0-1,0-2,0-3,1-2,1-3,2-3 \
+  --allow-missing-depth \
+  --epochs 80 \
+  --batch-size 16 \
+  --lr 1e-4 \
+  --lr-scheduler cosine \
+  --min-lr-ratio 0.05 \
+  --noise-aug \
+  --noise-aug-root /home/kemove/yyz/AV-PedAware/data/pairs_ros1/noise \
+  --snr-min-db 0 \
+  --snr-max-db 25 \
+  --device cuda:0 \
+  --save-dir weights/av_nav_sslnet_audio \
+  --log-dir runs/av_nav_sslnet_audio
 ```
 
 训练中每个 epoch 会打印：
@@ -151,9 +174,29 @@ python test_doa.py \
   --indices all \
   --predictions-csv reports/pairs_ros1_predictions.csv \
   --distributions-npz reports/pairs_ros1_distributions.npz
+
+
+
+python test_doa.py \
+  --data-root /home/kemove/yyz/AV-PedAware/data/av_nav_pairs \
+  --eval-split val \
+  --model audio \
+  --audio-feat ipd \
+  --audio-channels 1,2,3,4 \
+  --ipd-pairs 0-1,0-2,0-3,1-2,1-3,2-3 \
+  --allow-missing-depth \
+  --checkpoint weights/av_nav_sslnet_audio/best_model.pth \
+  --indices all \
+  --predictions-csv reports/pairs_avnav_predictions.csv \
+  --object-stats-csv reports/pairs_avnav_object_error_stats.csv \
+  --object-plots-dir reports/pairs_avnav_object_error_plots \
+  --distributions-npz reports/pairs_avnav_distributions.npz
+
 ```
 
-测试输出包含 `Peak DOA MAE` 与 `Peak distance MAE`。
+测试输出包含整体 `Peak DOA MAE`、`Peak distance MAE`，并按 object 打印
+DOA/distance error 的均值、中位数、P90、最大值等统计。`--object-plots-dir` 中会保存
+每个 object 的 DOA 和 distance error boxplot/histogram。
 
 ## 3. 不使用模型先验证 Audio Map
 
