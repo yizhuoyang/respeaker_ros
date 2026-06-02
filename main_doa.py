@@ -6,7 +6,7 @@ import torch
 from torch.utils.data import DataLoader, Subset, WeightedRandomSampler, random_split
 from torch.utils.tensorboard import SummaryWriter
 
-from dataloader.ssl_dataset import CLASS_NAMES, SingleStepDataset
+from dataloader.ssl_dataset import CLASS_NAMES, SingleStepDataset, object_prefix
 from network.audionet.ssl_net import SSLNet_DOA, SSLNet_depth_DOA
 from model_training.train_doa import train_one_epoch, validate
 
@@ -21,11 +21,13 @@ def parse_args():
     parser.add_argument("--train-root", default=None, help="Optional train dataset root. Overrides --data-root split.")
     parser.add_argument("--val-root", default=None, help="Optional val dataset root. Overrides --data-root split.")
     parser.add_argument(
+        "--objects",
         "--object-name",
+        dest="object_name",
         default=None,
         help=(
-            "Optional object name filter, e.g. dryer, person, guiter. "
-            "It matches folders with the same prefix, such as dryer1/dryer2."
+            "Optional comma-separated object category filter, e.g. chair,person,guitar. "
+            "It matches folders with the same prefix, such as chair31/person11."
         ),
     )
     parser.add_argument(
@@ -141,6 +143,11 @@ def parse_name_set(value):
     if not value:
         return set()
     return {item.strip() for item in value.split(",") if item.strip()}
+
+
+def format_object_filter(value):
+    names = sorted(parse_name_set(value))
+    return ",".join(names) if names else "all"
 
 
 def get_stationary_noise_paths(args):
@@ -400,6 +407,34 @@ def compute_class_weights(dataset, num_classes=3):
     return weights
 
 
+def iter_base_dataset_items(dataset):
+    if hasattr(dataset, "datasets"):
+        for child in dataset.datasets:
+            yield from iter_base_dataset_items(child)
+        return
+    if hasattr(dataset, "dataset") and hasattr(dataset, "indices"):
+        base = dataset.dataset
+        for index in dataset.indices:
+            yield base.file_list[int(index)]
+        return
+    if hasattr(dataset, "file_list"):
+        yield from dataset.file_list
+
+
+def object_counts(dataset):
+    counts = {}
+    for item in iter_base_dataset_items(dataset):
+        name = object_prefix(item["dataset_dir"].name)
+        counts[name] = counts.get(name, 0) + 1
+    return dict(sorted(counts.items(), key=lambda pair: pair[0]))
+
+
+def print_object_counts(title, dataset):
+    counts = object_counts(dataset)
+    text = ", ".join(f"{name}:{count}" for name, count in counts.items()) if counts else "none"
+    print(f"{title} object counts: {text}")
+
+
 def freeze_classifier_modules(model):
     module_names = [
         "spec_encoder",
@@ -493,6 +528,7 @@ def main():
     ipd_pairs = parse_channel_pairs(args.ipd_pairs)
     audio_in_channels = infer_audio_in_channels(args.audio_feat, audio_channels, ipd_pairs)
     print(f"Audio feature: {args.audio_feat}, input channels: {audio_in_channels}")
+    print(f"Object filter: {format_object_filter(args.object_name)}")
     if args.noise_aug:
         noise_root = args.noise_aug_root or str(Path(args.data_root) / "noise")
         print(
@@ -503,6 +539,8 @@ def main():
 
     train_dataset, val_dataset, train_loader, val_loader = build_loaders(args)
     print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
+    print_object_counts("Train", train_dataset)
+    print_object_counts("Val", val_dataset)
     class_weights = None
     if args.use_classification and not args.no_class_loss_weights:
         class_weights = compute_class_weights(train_dataset)

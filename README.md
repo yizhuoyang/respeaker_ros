@@ -143,6 +143,13 @@ python main_doa.py \
   --log-dir runs/av_nav_sslnet_audio
 ```
 
+如果只想训练特定物体类别，追加 `--objects` 即可。它会按序列名前缀匹配类别，例如
+`chair31` 会匹配到 `chair`：
+
+```bash
+--objects chair,person
+```
+
 训练中每个 epoch 会打印：
 
 ```text
