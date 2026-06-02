@@ -1,8 +1,8 @@
-# Install script for directory: /home/kemove/yyz/audio-nav/respeaker_ros/src/respeaker_ros_recorder
+# Install script for directory: /home/kemove/yyz/respeaker_ros/src/respeaker_ros_recorder
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)
-  set(CMAKE_INSTALL_PREFIX "/home/kemove/yyz/audio-nav/respeaker_ros/install")
+  set(CMAKE_INSTALL_PREFIX "/home/kemove/yyz/respeaker_ros/install")
 endif()
 string(REGEX REPLACE "/$" "" CMAKE_INSTALL_PREFIX "${CMAKE_INSTALL_PREFIX}")
 
@@ -43,53 +43,53 @@ if(NOT DEFINED CMAKE_OBJDUMP)
 endif()
 
 if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_COMPONENT)
-  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/share/respeaker_ros_recorder/msg" TYPE FILE FILES "/home/kemove/yyz/audio-nav/respeaker_ros/src/respeaker_ros_recorder/msg/AudioDataStamped.msg")
+  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/share/respeaker_ros_recorder/msg" TYPE FILE FILES "/home/kemove/yyz/respeaker_ros/src/respeaker_ros_recorder/msg/AudioDataStamped.msg")
 endif()
 
 if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_COMPONENT)
-  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/share/respeaker_ros_recorder/cmake" TYPE FILE FILES "/home/kemove/yyz/audio-nav/respeaker_ros/build/respeaker_ros_recorder/catkin_generated/installspace/respeaker_ros_recorder-msg-paths.cmake")
+  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/share/respeaker_ros_recorder/cmake" TYPE FILE FILES "/home/kemove/yyz/respeaker_ros/build/respeaker_ros_recorder/catkin_generated/installspace/respeaker_ros_recorder-msg-paths.cmake")
 endif()
 
 if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_COMPONENT)
-  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/include" TYPE DIRECTORY FILES "/home/kemove/yyz/audio-nav/respeaker_ros/devel/include/respeaker_ros_recorder")
+  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/include" TYPE DIRECTORY FILES "/home/kemove/yyz/respeaker_ros/devel/include/respeaker_ros_recorder")
 endif()
 
 if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_COMPONENT)
-  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/share/roseus/ros" TYPE DIRECTORY FILES "/home/kemove/yyz/audio-nav/respeaker_ros/devel/share/roseus/ros/respeaker_ros_recorder")
+  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/share/roseus/ros" TYPE DIRECTORY FILES "/home/kemove/yyz/respeaker_ros/devel/share/roseus/ros/respeaker_ros_recorder")
 endif()
 
 if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_COMPONENT)
-  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/share/common-lisp/ros" TYPE DIRECTORY FILES "/home/kemove/yyz/audio-nav/respeaker_ros/devel/share/common-lisp/ros/respeaker_ros_recorder")
+  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/share/common-lisp/ros" TYPE DIRECTORY FILES "/home/kemove/yyz/respeaker_ros/devel/share/common-lisp/ros/respeaker_ros_recorder")
 endif()
 
 if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_COMPONENT)
-  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/share/gennodejs/ros" TYPE DIRECTORY FILES "/home/kemove/yyz/audio-nav/respeaker_ros/devel/share/gennodejs/ros/respeaker_ros_recorder")
+  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/share/gennodejs/ros" TYPE DIRECTORY FILES "/home/kemove/yyz/respeaker_ros/devel/share/gennodejs/ros/respeaker_ros_recorder")
 endif()
 
 if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_COMPONENT)
-  execute_process(COMMAND "/home/kemove/anaconda3/envs/il/bin/python3" -m compileall "/home/kemove/yyz/audio-nav/respeaker_ros/devel/lib/python3/dist-packages/respeaker_ros_recorder")
+  execute_process(COMMAND "/home/kemove/anaconda3/envs/il/bin/python3" -m compileall "/home/kemove/yyz/respeaker_ros/devel/lib/python3/dist-packages/respeaker_ros_recorder")
 endif()
 
 if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_COMPONENT)
-  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/python3/dist-packages" TYPE DIRECTORY FILES "/home/kemove/yyz/audio-nav/respeaker_ros/devel/lib/python3/dist-packages/respeaker_ros_recorder")
+  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/python3/dist-packages" TYPE DIRECTORY FILES "/home/kemove/yyz/respeaker_ros/devel/lib/python3/dist-packages/respeaker_ros_recorder")
 endif()
 
 if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_COMPONENT)
-  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/pkgconfig" TYPE FILE FILES "/home/kemove/yyz/audio-nav/respeaker_ros/build/respeaker_ros_recorder/catkin_generated/installspace/respeaker_ros_recorder.pc")
+  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/pkgconfig" TYPE FILE FILES "/home/kemove/yyz/respeaker_ros/build/respeaker_ros_recorder/catkin_generated/installspace/respeaker_ros_recorder.pc")
 endif()
 
 if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_COMPONENT)
-  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/share/respeaker_ros_recorder/cmake" TYPE FILE FILES "/home/kemove/yyz/audio-nav/respeaker_ros/build/respeaker_ros_recorder/catkin_generated/installspace/respeaker_ros_recorder-msg-extras.cmake")
+  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/share/respeaker_ros_recorder/cmake" TYPE FILE FILES "/home/kemove/yyz/respeaker_ros/build/respeaker_ros_recorder/catkin_generated/installspace/respeaker_ros_recorder-msg-extras.cmake")
 endif()
 
 if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_COMPONENT)
   file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/share/respeaker_ros_recorder/cmake" TYPE FILE FILES
-    "/home/kemove/yyz/audio-nav/respeaker_ros/build/respeaker_ros_recorder/catkin_generated/installspace/respeaker_ros_recorderConfig.cmake"
-    "/home/kemove/yyz/audio-nav/respeaker_ros/build/respeaker_ros_recorder/catkin_generated/installspace/respeaker_ros_recorderConfig-version.cmake"
+    "/home/kemove/yyz/respeaker_ros/build/respeaker_ros_recorder/catkin_generated/installspace/respeaker_ros_recorderConfig.cmake"
+    "/home/kemove/yyz/respeaker_ros/build/respeaker_ros_recorder/catkin_generated/installspace/respeaker_ros_recorderConfig-version.cmake"
     )
 endif()
 
 if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_COMPONENT)
-  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/share/respeaker_ros_recorder" TYPE FILE FILES "/home/kemove/yyz/audio-nav/respeaker_ros/src/respeaker_ros_recorder/package.xml")
+  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/share/respeaker_ros_recorder" TYPE FILE FILES "/home/kemove/yyz/respeaker_ros/src/respeaker_ros_recorder/package.xml")
 endif()
 

@@ -53,10 +53,10 @@ RM = /usr/local/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /home/kemove/yyz/audio-nav/respeaker_ros/src
+CMAKE_SOURCE_DIR = /home/kemove/yyz/respeaker_ros/src
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /home/kemove/yyz/audio-nav/respeaker_ros/build
+CMAKE_BINARY_DIR = /home/kemove/yyz/respeaker_ros/build
 
 # Utility rule file for tests.
 
@@ -78,6 +78,6 @@ CMakeFiles/tests.dir/clean:
 .PHONY : CMakeFiles/tests.dir/clean
 
 CMakeFiles/tests.dir/depend:
-	cd /home/kemove/yyz/audio-nav/respeaker_ros/build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /home/kemove/yyz/audio-nav/respeaker_ros/src /home/kemove/yyz/audio-nav/respeaker_ros/src /home/kemove/yyz/audio-nav/respeaker_ros/build /home/kemove/yyz/audio-nav/respeaker_ros/build /home/kemove/yyz/audio-nav/respeaker_ros/build/CMakeFiles/tests.dir/DependInfo.cmake --color=$(COLOR)
+	cd /home/kemove/yyz/respeaker_ros/build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /home/kemove/yyz/respeaker_ros/src /home/kemove/yyz/respeaker_ros/src /home/kemove/yyz/respeaker_ros/build /home/kemove/yyz/respeaker_ros/build /home/kemove/yyz/respeaker_ros/build/CMakeFiles/tests.dir/DependInfo.cmake --color=$(COLOR)
 .PHONY : CMakeFiles/tests.dir/depend
 

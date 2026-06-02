@@ -53,10 +53,10 @@ RM = /usr/local/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /home/kemove/yyz/audio-nav/respeaker_ros/src
+CMAKE_SOURCE_DIR = /home/kemove/yyz/respeaker_ros/src
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /home/kemove/yyz/audio-nav/respeaker_ros/build
+CMAKE_BINARY_DIR = /home/kemove/yyz/respeaker_ros/build
 
 # Utility rule file for _catkin_empty_exported_target.
 
@@ -74,10 +74,10 @@ respeaker_ros_recorder/CMakeFiles/_catkin_empty_exported_target.dir/build: _catk
 .PHONY : respeaker_ros_recorder/CMakeFiles/_catkin_empty_exported_target.dir/build
 
 respeaker_ros_recorder/CMakeFiles/_catkin_empty_exported_target.dir/clean:
-	cd /home/kemove/yyz/audio-nav/respeaker_ros/build/respeaker_ros_recorder && $(CMAKE_COMMAND) -P CMakeFiles/_catkin_empty_exported_target.dir/cmake_clean.cmake
+	cd /home/kemove/yyz/respeaker_ros/build/respeaker_ros_recorder && $(CMAKE_COMMAND) -P CMakeFiles/_catkin_empty_exported_target.dir/cmake_clean.cmake
 .PHONY : respeaker_ros_recorder/CMakeFiles/_catkin_empty_exported_target.dir/clean
 
 respeaker_ros_recorder/CMakeFiles/_catkin_empty_exported_target.dir/depend:
-	cd /home/kemove/yyz/audio-nav/respeaker_ros/build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /home/kemove/yyz/audio-nav/respeaker_ros/src /home/kemove/yyz/audio-nav/respeaker_ros/src/respeaker_ros_recorder /home/kemove/yyz/audio-nav/respeaker_ros/build /home/kemove/yyz/audio-nav/respeaker_ros/build/respeaker_ros_recorder /home/kemove/yyz/audio-nav/respeaker_ros/build/respeaker_ros_recorder/CMakeFiles/_catkin_empty_exported_target.dir/DependInfo.cmake --color=$(COLOR)
+	cd /home/kemove/yyz/respeaker_ros/build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /home/kemove/yyz/respeaker_ros/src /home/kemove/yyz/respeaker_ros/src/respeaker_ros_recorder /home/kemove/yyz/respeaker_ros/build /home/kemove/yyz/respeaker_ros/build/respeaker_ros_recorder /home/kemove/yyz/respeaker_ros/build/respeaker_ros_recorder/CMakeFiles/_catkin_empty_exported_target.dir/DependInfo.cmake --color=$(COLOR)
 .PHONY : respeaker_ros_recorder/CMakeFiles/_catkin_empty_exported_target.dir/depend
 

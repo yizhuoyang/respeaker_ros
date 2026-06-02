@@ -1,5 +1,5 @@
 file(REMOVE_RECURSE
-  "/home/kemove/yyz/audio-nav/respeaker_ros/devel/include/respeaker_ros_recorder/AudioDataStamped.h"
+  "/home/kemove/yyz/respeaker_ros/devel/include/respeaker_ros_recorder/AudioDataStamped.h"
   "CMakeFiles/respeaker_ros_recorder_generate_messages_cpp"
 )
 

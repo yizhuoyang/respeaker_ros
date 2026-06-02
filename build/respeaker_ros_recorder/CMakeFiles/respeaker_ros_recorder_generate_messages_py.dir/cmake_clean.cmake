@@ -1,6 +1,6 @@
 file(REMOVE_RECURSE
-  "/home/kemove/yyz/audio-nav/respeaker_ros/devel/lib/python3/dist-packages/respeaker_ros_recorder/msg/_AudioDataStamped.py"
-  "/home/kemove/yyz/audio-nav/respeaker_ros/devel/lib/python3/dist-packages/respeaker_ros_recorder/msg/__init__.py"
+  "/home/kemove/yyz/respeaker_ros/devel/lib/python3/dist-packages/respeaker_ros_recorder/msg/_AudioDataStamped.py"
+  "/home/kemove/yyz/respeaker_ros/devel/lib/python3/dist-packages/respeaker_ros_recorder/msg/__init__.py"
   "CMakeFiles/respeaker_ros_recorder_generate_messages_py"
 )
 

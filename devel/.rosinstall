@@ -1,2 +1,2 @@
 - setup-file:
-    local-name: /home/kemove/yyz/audio-nav/respeaker_ros/devel/setup.sh
+    local-name: /home/kemove/yyz/respeaker_ros/devel/setup.sh

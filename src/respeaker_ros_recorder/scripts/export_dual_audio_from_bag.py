@@ -3,6 +3,8 @@ import argparse
 import sys
 from pathlib import Path
 
+import rosbag
+
 from export_audio_from_bag import export_audio, parse_channel_list
 
 
@@ -37,25 +39,44 @@ def iter_bag_files(bag_dir, recursive=False):
     return sorted(path for path in bag_dir.glob(pattern) if path.is_file())
 
 
-def default_output_paths(bag_path, out_dir, prefix, relative_parent=None):
+def get_first_audio_stamp(bag_path, topic):
+    with rosbag.Bag(str(bag_path), "r") as bag:
+        for _, msg, _ in bag.read_messages(topics=[topic]):
+            return msg.header.stamp.to_sec()
+
+    raise RuntimeError(f"No audio messages found on topic: {topic}")
+
+
+def format_stamp_for_filename(stamp):
+    return f"{stamp:.9f}".rstrip("0").rstrip(".")
+
+
+def default_output_paths(bag_path, out_dir, prefix, first_stamp, relative_parent=None):
     bag_stem = Path(bag_path).expanduser().stem
     output_prefix = prefix or bag_stem
+    if first_stamp is not None:
+        output_prefix = f"{output_prefix}_{format_stamp_for_filename(first_stamp)}"
     output_dir = Path(out_dir).expanduser() if out_dir else Path(".")
 
     if relative_parent is not None:
         output_dir = output_dir / relative_parent
 
     return (
-        output_dir / f"{output_prefix}_mic1.wav",
-        output_dir / f"{output_prefix}_mic2.wav",
+        output_dir / "mic1" / f"{output_prefix}.wav",
+        output_dir / "mic2" / f"{output_prefix}.wav",
     )
 
 
 def export_one_bag(args, bag_path, mic1_out=None, mic2_out=None, relative_parent=None):
+    first_stamp = None
+    if not (mic1_out and mic2_out):
+        first_stamp = get_first_audio_stamp(bag_path, args.mic1_topic)
+
     default_mic1_out, default_mic2_out = default_output_paths(
         bag_path=bag_path,
         out_dir=args.out_dir,
         prefix=args.prefix if args.bag else "",
+        first_stamp=first_stamp,
         relative_parent=relative_parent,
     )
 
@@ -106,21 +127,23 @@ def batch_export(args):
         print("")
         print(f"[{index}/{len(bag_files)}] {bag_path}")
 
-        relative_parent = bag_path.relative_to(bag_dir).parent if args.recursive else None
-        mic1_out, mic2_out = default_output_paths(
-            bag_path=bag_path,
-            out_dir=args.out_dir,
-            prefix="",
-            relative_parent=relative_parent,
-        )
-
-        if (mic1_out.exists() or mic2_out.exists()) and not args.overwrite:
-            print(f"Skip existing wav: {mic1_out}")
-            print(f"Skip existing wav: {mic2_out}")
-            skip_count += 1
-            continue
-
         try:
+            relative_parent = bag_path.relative_to(bag_dir).parent if args.recursive else None
+            first_stamp = get_first_audio_stamp(bag_path, args.mic1_topic)
+            mic1_out, mic2_out = default_output_paths(
+                bag_path=bag_path,
+                out_dir=args.out_dir,
+                prefix="",
+                first_stamp=first_stamp,
+                relative_parent=relative_parent,
+            )
+
+            if (mic1_out.exists() or mic2_out.exists()) and not args.overwrite:
+                print(f"Skip existing wav: {mic1_out}")
+                print(f"Skip existing wav: {mic2_out}")
+                skip_count += 1
+                continue
+
             export_one_bag(
                 args=args,
                 bag_path=bag_path,
@@ -156,12 +179,12 @@ def main():
     parser.add_argument(
         "--mic1-out",
         default="",
-        help="Mic 1 output wav for single-bag export. Default: <out-dir>/<bag-name>_mic1.wav",
+        help="Mic 1 output wav for single-bag export. Default: <out-dir>/mic1/<bag-name>_<first-audio-stamp>.wav",
     )
     parser.add_argument(
         "--mic2-out",
         default="",
-        help="Mic 2 output wav for single-bag export. Default: <out-dir>/<bag-name>_mic2.wav",
+        help="Mic 2 output wav for single-bag export. Default: <out-dir>/mic2/<bag-name>_<first-audio-stamp>.wav",
     )
     parser.add_argument(
         "--out-dir",

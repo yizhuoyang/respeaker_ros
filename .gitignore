@@ -6,3 +6,5 @@ devel/
 *.bag
 *.wav
 wav_exports/
+*.pyc
+__pycache__/

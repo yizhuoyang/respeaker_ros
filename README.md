@@ -54,6 +54,7 @@ conda deactivate
 cd /home/kemove/yyz/audio-nav/ws_col
 source /opt/ros/noetic/setup.bash
 catkin_make -DPYTHON_EXECUTABLE=/usr/bin/python3
+catkin_make -DPYTHON_EXECUTABLE=/home/kemove/anaconda3/envs/open-mmlab/bin/python3
 source devel/setup.bash
 ```
 
@@ -221,8 +222,8 @@ rosrun respeaker_ros_recorder export_dual_audio_from_bag.py \
 默认会生成：
 
 ```text
-dual_wav/dual_audio_mic1.wav
-dual_wav/dual_audio_mic2.wav
+dual_wav/mic1/dual_audio_<first-audio-stamp>.wav
+dual_wav/mic2/dual_audio_<first-audio-stamp>.wav
 ```
 
 也可以手动指定两个输出文件：
@@ -248,16 +249,16 @@ rosrun respeaker_ros_recorder export_dual_audio_from_bag.py \
 
 ```bash
 rosrun respeaker_ros_recorder export_dual_audio_from_bag.py \
-  --bag-dir /media/kemove/T9/bag/dual_bag_nav \
-  --out-dir /media/kemove/T9/bag/dual_wav_exports \
+  --bag-dir /media/kemove/T9/bag/static2/bag_nav \
+  --out-dir /media/kemove/T9/bag/static2/bag_nav/dual_wav_exports \
   --keep-going
 ```
 
 批量导出默认会为每个 bag 生成：
 
 ```text
-<bag-name>_mic1.wav
-<bag-name>_mic2.wav
+mic1/<bag-name>_<first-audio-stamp>.wav
+mic2/<bag-name>_<first-audio-stamp>.wav
 ```
 
 ## 9. 常用参数
@@ -380,7 +381,7 @@ rosrun respeaker_ros_recorder export_audio_from_bag.py \
 
 
 rosrun respeaker_ros_recorder batch_export_audio_from_bags.py \
-  --bag-dir /media/kemove/T9/bag/bag_nav \
+  --bag-dir /media/kemove/T9/bag/static \
   --topic /respeaker/audio_raw \
   --keep-going
 ```
@@ -409,7 +410,7 @@ rosrun respeaker_ros_recorder export_dual_audio_from_bag.py \
 
 ```bash
 rosrun respeaker_ros_recorder export_dual_audio_from_bag.py \
-  --bag-dir /media/kemove/T9/bag/dual_bag_nav \
+  --bag-dir /media/kemove/T9/bag/static/two \
   --keep-going
 
 
