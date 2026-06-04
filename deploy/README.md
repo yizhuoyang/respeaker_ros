@@ -740,7 +740,8 @@ python deploy/ros1_sslnet_audio_map_fusion.py \
   _resolution:=0.05 \
   _beta_r:=0.05 \
   _sigma_Q_cells:=1.0 \
-  _min_confidence:=0.05
+  _min_confidence:=0.05 \
+  _max_audio_input_mean_abs:=0.6
 ```
 
 - `_map_size_m` 和 `_resolution`：全局方形地图边长与格子分辨率。
@@ -752,6 +753,8 @@ python deploy/ros1_sslnet_audio_map_fusion.py \
   temporal decay，但能避免历史峰值过尖导致后续帧很难更新。
 - `_min_confidence`：DOA 峰值置信度低于该阈值时跳过当前更新。`doa_confidence`
   来自 softmax 后 DOA 分布的最大概率，范围为 `0~1`。
+- `_max_audio_input_mean_abs`：网络输入音频通道 `1,2,3,4` 的平均绝对幅值高于该阈值时跳过
+  当前 map 更新，默认 `0.6`；设为 `0` 或负数可关闭该规则。
 - `_argmax_resolution`：输出声源位置的网格精度，默认与 `_resolution` 相同。
 - `_max_odom_diff_sec`：预测时间戳可匹配的最大 odom 时间差，默认 `0.20 s`。
 

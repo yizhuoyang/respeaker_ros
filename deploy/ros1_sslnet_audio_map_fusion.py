@@ -75,6 +75,7 @@ class SSLNetAudioMapFusionNode:
             if map_center_x is not None
             else None
         )
+        self.min_confidence = float(rospy.get_param("~min_confidence", 0.2))
         self.fusion = StreamingSourceMapFusion(
             map_size_m=float(rospy.get_param("~map_size_m", 12.0)),
             res=resolution,
@@ -85,9 +86,11 @@ class SSLNetAudioMapFusionNode:
             w_min=float(rospy.get_param("~w_min", 0.2)),
             r_max=float(rospy.get_param("~max_distance_m", 6.0)),
             use_softmax=False,
-            intensity_zero_eps=float(rospy.get_param("~min_confidence", 0.2)),
+            intensity_zero_eps=self.min_confidence,
         )
-        self.min_confidence = float(rospy.get_param("~min_confidence", 0.0))
+        self.max_audio_input_mean_abs = float(
+            rospy.get_param("~max_audio_input_mean_abs", 0.06)
+        )
         self.frame_id_override = rospy.get_param("~frame_id", "")
         self.marker_height = float(rospy.get_param("~marker_height", 0.12))
         self.map_alpha_threshold = float(rospy.get_param("~map_alpha_threshold", 0.0))
@@ -346,6 +349,20 @@ class SSLNetAudioMapFusionNode:
             pose = odom.pose.pose.position
             yaw = quaternion_to_yaw(odom.pose.pose.orientation)
             confidence = float(summary.get("doa_confidence", 1.0))
+            audio_input_mean_abs = summary.get("audio_input_mean_abs")
+            audio_too_loud = (
+                audio_input_mean_abs is not None
+                and self.max_audio_input_mean_abs > 0.0
+                and float(audio_input_mean_abs) > self.max_audio_input_mean_abs
+            )
+            update_intensity = 0.0 if audio_too_loud else confidence
+            if audio_too_loud:
+                self.rospy.logwarn_throttle(
+                    2.0,
+                    "Skip audio map update because network input mean abs %.3f > %.3f",
+                    float(audio_input_mean_abs),
+                    self.max_audio_input_mean_abs,
+                )
             if not self.fusion.inited and self.map_center_pose is not None:
                 self.fusion.reset(new_center_pose=self.map_center_pose, clear_bins=False)
             output = self.fusion.update_frame(
@@ -353,13 +370,22 @@ class SSLNetAudioMapFusionNode:
                 pred_r=distance,
                 pose=(float(pose.x), float(pose.y)),
                 heading=ros_yaw_to_fusion_heading(yaw),
-                audio_intensity=confidence,
+                audio_intensity=update_intensity,
             )
             frame_id = self.global_frame_id(odom)
             source_stamp = self.rospy.Time.from_sec(float(summary["stamp"]))
             with self.lock:
                 self.robot_path.append((float(pose.x), float(pose.y)))
-            self.publish_outputs(output, frame_id, source_stamp, pose, yaw, confidence)
+            self.publish_outputs(
+                output,
+                frame_id,
+                source_stamp,
+                pose,
+                yaw,
+                confidence,
+                audio_input_mean_abs=audio_input_mean_abs,
+                audio_too_loud=audio_too_loud,
+            )
 
             with self.lock:
                 self.published_frame_count += 1
@@ -367,7 +393,17 @@ class SSLNetAudioMapFusionNode:
                 self.processed_doa_version = doa_version
                 self.processed_distance_version = distance_version
 
-    def publish_outputs(self, output, frame_id, stamp, robot_position, robot_yaw, confidence):
+    def publish_outputs(
+        self,
+        output,
+        frame_id,
+        stamp,
+        robot_position,
+        robot_yaw,
+        confidence,
+        audio_input_mean_abs=None,
+        audio_too_loud=False,
+    ):
         self.map_pub.publish(self.make_map(output, frame_id, stamp))
         self.argmax_pub.publish(self.make_argmax_point(output, frame_id, stamp))
         self.markers_pub.publish(
@@ -379,6 +415,10 @@ class SSLNetAudioMapFusionNode:
             "y": float(estimate[1]),
             "confidence": confidence,
             "did_update": bool(output["do_update"]),
+            "audio_input_mean_abs": (
+                None if audio_input_mean_abs is None else float(audio_input_mean_abs)
+            ),
+            "audio_too_loud": bool(audio_too_loud),
             "frame_id": frame_id,
             "frame_count": int(output["t"]),
             "stamp": stamp.to_sec(),

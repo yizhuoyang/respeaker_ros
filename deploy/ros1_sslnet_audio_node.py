@@ -180,6 +180,7 @@ class SSLNetAudioNode:
             segment, stamp = task
             try:
                 result = self.predictor.predict(segment, self.sample_rate)
+                result["audio_input_mean_abs"] = self.network_audio_mean_abs(segment)
             except Exception as exc:
                 self.rospy.logerr_throttle(5.0, "SSLNet inference failed: %s", exc)
             else:
@@ -187,6 +188,15 @@ class SSLNetAudioNode:
                     self.publish_prediction(result, stamp)
             finally:
                 self.inference_queue.task_done()
+
+    def network_audio_mean_abs(self, segment):
+        """Mean absolute waveform amplitude for the channels used by the SSLNet input."""
+        audio_channels = getattr(self.predictor, "audio_channels", ())
+        if not audio_channels:
+            return float(np.mean(np.abs(segment)))
+        if max(audio_channels) >= segment.shape[1]:
+            return float(np.mean(np.abs(segment)))
+        return float(np.mean(np.abs(segment[:, audio_channels])))
 
     def shutdown(self):
         """Stop ROS input immediately; never wait indefinitely for an in-flight inference."""
@@ -234,6 +244,7 @@ class SSLNetAudioNode:
             "distance_m": result["distance_m"],
             "doa_confidence": result["doa_confidence"],
             "distance_confidence": result["distance_confidence"],
+            "audio_input_mean_abs": result.get("audio_input_mean_abs", 0.0),
             "inference_ms": result["inference_ms"],
             "window_seconds": self.window_seconds,
             "stamp": stamp,
@@ -246,11 +257,12 @@ class SSLNetAudioNode:
         self.doa_pub.publish(doa)
         self.distance_pub.publish(distance)
         self.rospy.loginfo(
-            "SSLNet: doa=%.1f deg distance=%.2f m confidence=(%.3f, %.3f) inference=%.1f ms",
+            "SSLNet: doa=%.1f deg distance=%.2f m confidence=(%.3f, %.3f) audio_mean_abs=%.3f inference=%.1f ms",
             result["doa_deg"],
             result["distance_m"],
             result["doa_confidence"],
             result["distance_confidence"],
+            result.get("audio_input_mean_abs", 0.0),
             result["inference_ms"],
         )
 
