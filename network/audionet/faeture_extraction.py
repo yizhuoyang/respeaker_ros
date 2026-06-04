@@ -3,6 +3,23 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import models
 
+
+def onnx_safe_adaptive_avg_pool2d(x, output_size):
+    if not torch.onnx.is_in_onnx_export():
+        return F.adaptive_avg_pool2d(x, output_size)
+
+    out_h, out_w = output_size
+    in_h, in_w = int(x.shape[-2]), int(x.shape[-1])
+    if in_h == out_h and in_w == out_w:
+        return x
+    if in_h % out_h == 0 and in_w % out_w == 0:
+        kernel = (in_h // out_h, in_w // out_w)
+        return F.avg_pool2d(x, kernel_size=kernel, stride=kernel)
+    if in_h == out_h and in_w == 1 and out_w > 1:
+        return x.expand(-1, -1, out_h, out_w)
+    return F.interpolate(x, size=output_size, mode="area")
+
+
 class DepthResNet18Encoder(nn.Module):
     def __init__(self, out_dim=256, pretrained=True):
         super().__init__()
@@ -138,8 +155,8 @@ class SpecEncoderGlobal(nn.Module):
 
         B = x.size(0)
         x = self.conv(x)
-        x = self.global_pool(x)   # -> (B, C_last, 8, 3)
-        x = x.view(B, -1)         # -> (B, C_last*8*3)
+        x = onnx_safe_adaptive_avg_pool2d(x, (8, 3))   # -> (B, C_last, 8, 3)
+        x = x.reshape(B, -1)      # -> (B, C_last*8*3)
         x = self.fc(x)            # -> (B, out_dim)
         return x
 

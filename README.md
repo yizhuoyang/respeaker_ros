@@ -152,7 +152,7 @@ python main_doa.py \
 
 训练中每个 epoch 会打印：
 
-```text
+```text-
 Epoch ... | lr=...
 Train DOA peak MAE: ... deg
 Val DOA peak MAE: ... deg

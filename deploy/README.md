@@ -263,6 +263,15 @@ python deploy/export_sslnet_tensorrt.py \
   --device cuda:0 \
   --builder python \
   --fp16
+
+
+python deploy/export_sslnet_tensorrt.py \
+  --checkpoint weights/av_nav_sslnet_audio_more/best_model.pth \
+  --onnx weights/av_nav_sslnet_audio_more/best_model.onnx \
+  --engine weights/av_nav_sslnet_audio_more/best_model.engine \
+  --window-seconds 0.5 \
+  --device cuda:0 \
+  --builder python \
 ```
 
 FP16 可能在接近持平的 DOA bins 之间改变 argmax，使用前应在真实录音上与 FP32 或
@@ -276,6 +285,14 @@ python deploy/ros1_sslnet_audio_engine_node.py \
   _device:=cuda:0 \
   _window_seconds:=1.0 \
   _hop_seconds:=0.5
+
+
+
+python deploy/ros1_sslnet_audio_engine_node.py \
+  _engine:=weights/av_nav_sslnet_audio_more/best_model.engine \
+  _device:=cuda:0 \
+  _window_seconds:=0.5 \
+  _hop_seconds:=0.25
 ```
 
 节点已有相同路径的默认 engine，因此导出到上述位置后也可简写为：

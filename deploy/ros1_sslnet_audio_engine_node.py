@@ -47,7 +47,7 @@ class SSLNetAudioEngineNode(SSLNetAudioNode):
                 f"TensorRT metadata not found: {metadata}. Export the engine and metadata together."
             )
 
-        self.topic = rospy.get_param("~audio_topic", "/respeaker/audio_raw")
+        self.topic = rospy.get_param("~audio_topic", "/mic2/audio_raw")
         self.sample_rate = int(rospy.get_param("~sample_rate", 16000))
         self.window_seconds = float(rospy.get_param("~window_seconds", 1.0))
         self.hop_seconds = float(rospy.get_param("~hop_seconds", self.window_seconds))

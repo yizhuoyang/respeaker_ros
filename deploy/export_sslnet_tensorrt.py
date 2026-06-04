@@ -136,8 +136,9 @@ def export_onnx(predictor, args):
         )
     except Exception as exc:
         raise RuntimeError(
-            "ONNX export failed. Install an ONNX package compatible with the PyTorch "
-            "environment, for example `python -m pip install onnx`, then rerun."
+            "ONNX export failed. If the error says `Module onnx is not installed`, "
+            "install an ONNX package compatible with the PyTorch environment, for example "
+            f"`python -m pip install onnx`. Original error: {exc}"
         ) from exc
     return tuple(feature.shape), output_names
 
