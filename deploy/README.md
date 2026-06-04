@@ -738,7 +738,7 @@ rostopic hz /sslnet_audio_inference/distance_distribution
 python deploy/ros1_sslnet_audio_map_fusion.py \
   _map_size_m:=12.0 \
   _resolution:=0.05 \
-  _beta_r:=0.2 \
+  _beta_r:=0.05 \
   _sigma_Q_cells:=1.0 \
   _min_confidence:=0.05
 ```
@@ -746,9 +746,12 @@ python deploy/ros1_sslnet_audio_map_fusion.py \
 - `_map_size_m` 和 `_resolution`：全局方形地图边长与格子分辨率。
 - `_map_center_x` 和 `_map_center_y`：固定全局地图中心，默认均为 `0.0`；与 visual map
   的默认值一致，两张地图不需要互相订阅也能严格逐格叠加。
-- `_beta_r`：distance 分布在融合中的影响，越大越依赖距离预测。
-- `_sigma_Q_cells`：每次更新前的空间扩散量，允许声源位置有轻微不确定性。
-- `_min_confidence`：DOA 和 distance 峰值置信度的较小值低于该阈值时跳过当前更新。
+- `_beta_r`：distance 分布在融合中的影响，默认 `0.05`；越大越依赖距离预测，设为 `0`
+  则只使用 DOA。
+- `_sigma_Q_cells`：每次更新前对历史 map 做空间扩散，默认 `1.0`。它不是严格的
+  temporal decay，但能避免历史峰值过尖导致后续帧很难更新。
+- `_min_confidence`：DOA 峰值置信度低于该阈值时跳过当前更新。`doa_confidence`
+  来自 softmax 后 DOA 分布的最大概率，范围为 `0~1`。
 - `_argmax_resolution`：输出声源位置的网格精度，默认与 `_resolution` 相同。
 - `_max_odom_diff_sec`：预测时间戳可匹配的最大 odom 时间差，默认 `0.20 s`。
 

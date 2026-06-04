@@ -79,13 +79,13 @@ class SSLNetAudioMapFusionNode:
             map_size_m=float(rospy.get_param("~map_size_m", 12.0)),
             res=resolution,
             node_res=float(rospy.get_param("~argmax_resolution", resolution)),
-            sigma_Q_cells=float(rospy.get_param("~sigma_Q_cells", 0.0)),
-            beta_r=float(rospy.get_param("~beta_r", 0.2)),
+            sigma_Q_cells=float(rospy.get_param("~sigma_Q_cells", 1.0)),
+            beta_r=float(rospy.get_param("~beta_r", 0.1)),
             use_entropy_weight=bool(rospy.get_param("~use_entropy_weight", True)),
             w_min=float(rospy.get_param("~w_min", 0.2)),
             r_max=float(rospy.get_param("~max_distance_m", 6.0)),
             use_softmax=False,
-            intensity_zero_eps=float(rospy.get_param("~min_confidence", 0.0)),
+            intensity_zero_eps=float(rospy.get_param("~min_confidence", 0.2)),
         )
         self.min_confidence = float(rospy.get_param("~min_confidence", 0.0))
         self.frame_id_override = rospy.get_param("~frame_id", "")
@@ -345,10 +345,7 @@ class SSLNetAudioMapFusionNode:
 
             pose = odom.pose.pose.position
             yaw = quaternion_to_yaw(odom.pose.pose.orientation)
-            confidence = min(
-                float(summary.get("doa_confidence", 1.0)),
-                float(summary.get("distance_confidence", 1.0)),
-            )
+            confidence = float(summary.get("doa_confidence", 1.0))
             if not self.fusion.inited and self.map_center_pose is not None:
                 self.fusion.reset(new_center_pose=self.map_center_pose, clear_bins=False)
             output = self.fusion.update_frame(
