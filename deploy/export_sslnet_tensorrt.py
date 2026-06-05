@@ -86,6 +86,7 @@ def write_metadata(path, predictor, feature_shape, output_names, args):
         "input_name": "spectrogram",
         "input_shape": list(feature_shape),
         "output_names": output_names,
+        "has_signal_head": "signal_logits" in output_names,
         "num_doa_bins": 360,
         "num_distance_bins": 120,
         "distance_min_m": 0.0,
@@ -122,8 +123,10 @@ def export_onnx(predictor, args):
     with torch.no_grad():
         outputs = model(feature)
     output_names = ["doa_logits", "distance_logits"]
-    if len(outputs) > 2:
+    if getattr(model, "class_head", None) is not None:
         output_names.append("class_logits")
+    if getattr(model, "signal_head", None) is not None:
+        output_names.append("signal_logits")
     try:
         torch.onnx.export(
             model,

@@ -304,11 +304,17 @@ class SSLNetTensorRTPredictor:
     def predict(self, audio, sample_rate):
         started_at = time.perf_counter()
         outputs = self.session.infer(self._prepare_features(audio, sample_rate))
-        ordered = [outputs[name] for name in self.output_names if name in outputs]
-        if len(ordered) < 2:
-            ordered = list(outputs.values())
-        doa_probability = torch.softmax(ordered[0], dim=1)[0].cpu().numpy()
-        distance_probability = torch.softmax(ordered[1], dim=1)[0].cpu().numpy()
+        if "doa_logits" in outputs and "distance_logits" in outputs:
+            doa_logits = outputs["doa_logits"]
+            distance_logits = outputs["distance_logits"]
+        else:
+            ordered = [outputs[name] for name in self.output_names if name in outputs]
+            if len(ordered) < 2:
+                ordered = list(outputs.values())
+            doa_logits = ordered[0]
+            distance_logits = ordered[1]
+        doa_probability = torch.softmax(doa_logits, dim=1)[0].cpu().numpy()
+        distance_probability = torch.softmax(distance_logits, dim=1)[0].cpu().numpy()
         doa_bin = int(np.argmax(doa_probability))
         distance_bin = int(np.argmax(distance_probability))
         distance_axis = np.linspace(
@@ -323,8 +329,13 @@ class SSLNetTensorRTPredictor:
             "distance_probability": distance_probability,
             "inference_ms": float((time.perf_counter() - started_at) * 1000.0),
         }
-        if len(ordered) > 2:
-            class_probability = torch.softmax(ordered[2], dim=1)[0].cpu().numpy()
+        if "class_logits" in outputs:
+            class_probability = torch.softmax(outputs["class_logits"], dim=1)[0].cpu().numpy()
             result["class_probability"] = class_probability
             result["class_id"] = int(np.argmax(class_probability))
+        if "signal_logits" in outputs:
+            signal_probability = torch.softmax(outputs["signal_logits"], dim=1)[0].cpu().numpy()
+            result["signal_probability"] = signal_probability
+            result["signal_id"] = int(np.argmax(signal_probability))
+            result["signal_prob"] = float(signal_probability[1]) if len(signal_probability) > 1 else 0.0
         return result

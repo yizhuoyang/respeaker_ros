@@ -1,9 +1,10 @@
 import argparse
 import os
 from pathlib import Path
+import random
 
 import torch
-from torch.utils.data import DataLoader, Subset, WeightedRandomSampler, random_split
+from torch.utils.data import DataLoader, Sampler, Subset, WeightedRandomSampler, random_split
 from torch.utils.tensorboard import SummaryWriter
 
 from dataloader.ssl_dataset import CLASS_NAMES, SingleStepDataset, object_prefix
@@ -74,8 +75,14 @@ def parse_args():
     parser.add_argument("--gate-doa-by-pred-class", action="store_true", help="Only compute DOA/distance loss when predicted class is signal_static.")
     parser.add_argument("--classification-weight", type=float, default=1.0)
     parser.add_argument("--distance-weight", type=float, default=0.5)
+    parser.add_argument("--use-signal-detection", action="store_true", help="Add a binary signal/no_signal branch. Dataset audio is signal; wavs under noise/ are no_signal.")
+    parser.add_argument("--signal-only", action="store_true", help="Train only the binary signal/no_signal branch and freeze all other network parameters.")
+    parser.add_argument("--signal-weight", type=float, default=0.5, help="Loss weight for the binary signal/no_signal branch.")
+    parser.add_argument("--signal-noise-root", default=None, help="Directory containing no-signal noise wav files. Defaults to <data-root>/noise.")
+    parser.add_argument("--signal-noise-path", action="append", default=None, help="Specific no-signal wav file or directory. Can be repeated.")
     parser.add_argument("--max-signal-abs", type=float, default=0.06, help="With --use-classification, skip signal samples with selected-channel max abs above this value. Use <=0 to disable.")
     parser.add_argument("--class-balanced-sampler", action="store_true", help="Balance training samples by classification label.")
+    parser.add_argument("--signal-balanced-sampler", action="store_true", help="Balance training samples by binary signal/no_signal label.")
     parser.add_argument("--no-class-loss-weights", action="store_true", help="Disable inverse-frequency classification loss weights.")
     parser.add_argument("--use-denoise", action="store_true", help="Enable default dataloader denoising.")
     parser.add_argument("--denoise-noise", action="append", default=None, help="Backward-compatible stationary noise wav override. Can be repeated.")
@@ -223,6 +230,9 @@ def build_dataset(root, args, is_train=False):
         noise_aug_prob=args.noise_aug_prob,
         noise_aug_snr_min_db=args.snr_min_db,
         noise_aug_snr_max_db=args.snr_max_db,
+        signal_detection_enabled=args.use_signal_detection,
+        signal_noise_paths=args.signal_noise_path,
+        signal_noise_root=args.signal_noise_root,
         object_names=args.object_name,
         min_distance=args.min_distance,
         max_distance=args.max_distance,
@@ -260,19 +270,36 @@ def build_loaders(args):
             train_dataset = Subset(train_source, train_indices)
             val_dataset = Subset(full_dataset, val_indices)
 
-    if args.use_classification and args.class_balanced_sampler:
+    batch_sampler = None
+    if args.use_signal_detection and args.signal_balanced_sampler:
+        batch_sampler = SignalBalancedBatchSampler(
+            train_dataset,
+            batch_size=args.batch_size,
+            drop_last=False,
+            seed=args.seed,
+        )
+        sampler = None
+    elif args.use_classification and args.class_balanced_sampler:
         sampler = make_class_balanced_sampler(train_dataset)
     else:
         sampler = make_balanced_sampler(train_dataset) if args.balanced_sampler else None
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=args.batch_size,
-        shuffle=sampler is None,
-        sampler=sampler,
-        num_workers=args.num_workers,
-        pin_memory=torch.cuda.is_available(),
-        drop_last=False,
-    )
+    if batch_sampler is not None:
+        train_loader = DataLoader(
+            train_dataset,
+            batch_sampler=batch_sampler,
+            num_workers=args.num_workers,
+            pin_memory=torch.cuda.is_available(),
+        )
+    else:
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=args.batch_size,
+            shuffle=sampler is None,
+            sampler=sampler,
+            num_workers=args.num_workers,
+            pin_memory=torch.cuda.is_available(),
+            drop_last=False,
+        )
     val_loader = DataLoader(
         val_dataset,
         batch_size=args.batch_size,
@@ -332,6 +359,9 @@ def build_dataset_with_split(root, args, split, is_train=False):
         noise_aug_prob=args.noise_aug_prob,
         noise_aug_snr_min_db=args.snr_min_db,
         noise_aug_snr_max_db=args.snr_max_db,
+        signal_detection_enabled=args.use_signal_detection,
+        signal_noise_paths=args.signal_noise_path,
+        signal_noise_root=args.signal_noise_root,
         object_names=args.object_name,
         min_distance=args.min_distance,
         max_distance=args.max_distance,
@@ -389,12 +419,73 @@ def get_dataset_item_label(dataset, index):
     return dataset.get_class_label(index)
 
 
+def get_dataset_item_signal_label(dataset, index):
+    if hasattr(dataset, "dataset") and hasattr(dataset, "indices"):
+        item = dataset.dataset.file_list[int(dataset.indices[index])]
+    elif hasattr(dataset, "file_list"):
+        item = dataset.file_list[int(index)]
+    else:
+        raise TypeError("Unsupported dataset wrapper for signal-balanced sampler")
+    return int(item.get("signal_label", 1))
+
+
 def make_class_balanced_sampler(dataset, num_classes=3):
     labels = [get_dataset_item_label(dataset, index) for index in range(len(dataset))]
     label_tensor = torch.tensor(labels, dtype=torch.long)
     counts = torch.bincount(label_tensor, minlength=num_classes).float()
     weights = 1.0 / counts[label_tensor].clamp_min(1.0)
     return WeightedRandomSampler(weights=weights, num_samples=len(weights), replacement=True)
+
+
+class SignalBalancedBatchSampler(Sampler):
+    """Yield batches with half signal samples and half no-signal samples."""
+
+    def __init__(self, dataset, batch_size, drop_last=False, seed=0):
+        if batch_size < 2:
+            raise ValueError("--signal-balanced-sampler requires --batch-size >= 2")
+        self.dataset = dataset
+        self.batch_size = int(batch_size)
+        self.drop_last = bool(drop_last)
+        self.seed = int(seed)
+        self.epoch = 0
+        labels = [get_dataset_item_signal_label(dataset, index) for index in range(len(dataset))]
+        self.no_signal_indices = [index for index, label in enumerate(labels) if int(label) == 0]
+        self.signal_indices = [index for index, label in enumerate(labels) if int(label) == 1]
+        if not self.no_signal_indices:
+            raise RuntimeError("No no-signal samples found for --signal-balanced-sampler")
+        if not self.signal_indices:
+            raise RuntimeError("No signal samples found for --signal-balanced-sampler")
+        self.no_signal_per_batch = max(1, self.batch_size // 2)
+        self.signal_per_batch = self.batch_size - self.no_signal_per_batch
+        self.num_batches = len(self.signal_indices) // self.signal_per_batch
+        if not self.drop_last and len(self.signal_indices) % self.signal_per_batch:
+            self.num_batches += 1
+        print(
+            "Signal balanced batch sampler: "
+            f"signal={len(self.signal_indices)}, no_signal={len(self.no_signal_indices)}, "
+            f"batch={self.batch_size} -> signal_per_batch={self.signal_per_batch}, "
+            f"no_signal_per_batch={self.no_signal_per_batch}, batches={self.num_batches}"
+        )
+
+    def __iter__(self):
+        rng = random.Random(self.seed + self.epoch)
+        self.epoch += 1
+        signal_indices = list(self.signal_indices)
+        rng.shuffle(signal_indices)
+        for start in range(0, len(signal_indices), self.signal_per_batch):
+            signal_part = signal_indices[start:start + self.signal_per_batch]
+            if len(signal_part) < self.signal_per_batch and self.drop_last:
+                continue
+            no_signal_part = [
+                self.no_signal_indices[rng.randrange(len(self.no_signal_indices))]
+                for _ in range(self.no_signal_per_batch)
+            ]
+            batch = signal_part + no_signal_part
+            rng.shuffle(batch)
+            yield batch
+
+    def __len__(self):
+        return self.num_batches
 
 
 def compute_class_weights(dataset, num_classes=3):
@@ -458,12 +549,32 @@ def freeze_classifier_modules(model):
     print(f"Trainable params after freeze: {trainable_params}")
 
 
+def freeze_for_signal_only(model):
+    frozen_params = 0
+    trainable_params = 0
+    for name, param in model.named_parameters():
+        trainable = name.startswith("signal_head.")
+        param.requires_grad = trainable
+        if trainable:
+            trainable_params += param.numel()
+        else:
+            frozen_params += param.numel()
+    for name, module in model.named_modules():
+        if name and name != "signal_head" and not name.startswith("signal_head."):
+            module.eval()
+    print(f"Frozen non-signal params: {frozen_params}")
+    print(f"Trainable signal params: {trainable_params}")
+    if trainable_params == 0:
+        raise RuntimeError("No trainable signal_head parameters found. Use --use-signal-detection.")
+
+
 def build_model(args, audio_in_channels):
     if args.model == "audio":
         return SSLNet_DOA(
             use_compress=args.use_compress,
             audio_in_channels=audio_in_channels,
             num_classes=3 if args.use_classification else 0,
+            signal_classes=2 if args.use_signal_detection else 0,
         )
     return SSLNet_depth_DOA(
         use_compress=args.use_compress,
@@ -472,6 +583,7 @@ def build_model(args, audio_in_channels):
         freeze_depth_encoder=args.freeze_depth,
         drop_depth_prob=0.1,
         num_classes=3 if args.use_classification else 0,
+        signal_classes=2 if args.use_signal_detection else 0,
     )
 
 
@@ -515,6 +627,9 @@ def load_checkpoint_if_needed(model, checkpoint, device):
 
 def main():
     args = parse_args()
+    if args.signal_only:
+        args.use_signal_detection = True
+        args.signal_weight = 1.0
     if args.classification_only or args.freeze_classifier or args.gate_doa_by_pred_class:
         args.use_classification = True
     os.makedirs(args.log_dir, exist_ok=True)
@@ -536,6 +651,13 @@ def main():
             f"prob={args.noise_aug_prob:g}, snr=[{args.snr_min_db:g}, {args.snr_max_db:g}] dB, "
             f"root={noise_root}, extra_paths={args.noise_aug_path or []}"
         )
+    if args.use_signal_detection:
+        signal_noise_root = args.signal_noise_root or str(Path(args.data_root) / "noise")
+        print(
+            "Signal detection: "
+            f"weight={args.signal_weight:g}, noise_root={signal_noise_root}, "
+            f"extra_paths={args.signal_noise_path or []}"
+        )
 
     train_dataset, val_dataset, train_loader, val_loader = build_loaders(args)
     print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
@@ -547,6 +669,8 @@ def main():
 
     model = build_model(args, audio_in_channels).to(device)
     load_checkpoint_if_needed(model, args.checkpoint, device)
+    if args.signal_only:
+        freeze_for_signal_only(model)
     if args.freeze_classifier:
         freeze_classifier_modules(model)
 
@@ -575,8 +699,10 @@ def main():
             global_step=global_step,
             distance_weight=args.distance_weight,
             classification_weight=args.classification_weight if args.use_classification else 0.0,
+            signal_weight=args.signal_weight if args.use_signal_detection else 0.0,
             class_weights=class_weights,
             classification_only=args.classification_only,
+            signal_only=args.signal_only,
             gate_doa_by_pred_class=args.gate_doa_by_pred_class,
             signal_class_id=2,
             freeze_classifier_eval=args.freeze_classifier,
@@ -589,8 +715,10 @@ def main():
             writer=writer,
             distance_weight=args.distance_weight,
             classification_weight=args.classification_weight if args.use_classification else 0.0,
+            signal_weight=args.signal_weight if args.use_signal_detection else 0.0,
             class_weights=class_weights,
             classification_only=args.classification_only,
+            signal_only=args.signal_only,
             gate_doa_by_pred_class=args.gate_doa_by_pred_class,
             signal_class_id=2,
         )
@@ -623,3 +751,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+

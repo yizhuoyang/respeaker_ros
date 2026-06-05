@@ -55,7 +55,11 @@ trap stop_all INT TERM EXIT
 start_node sslnet_audio_map_fusion \
   python deploy/ros1_sslnet_audio_map_fusion.py \
     _broadcast_odom_tf:=true \
-    _sensor_frame_id:=livox_frame
+    _sensor_frame_id:=livox_frame \
+    _min_signal_prob:=0.5
+
+
+
 
 start_node yoloe_visual_map \
   python deploy_yolo/ros1_yoloe_visual_map.py \

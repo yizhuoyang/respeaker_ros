@@ -236,6 +236,7 @@ class SSLNetAudioNode:
             result["doa_confidence"],
             result["distance_confidence"],
             result["inference_ms"],
+            result.get("signal_prob", 1.0),
         ]
         doa = Float32MultiArray(data=result["doa_probability"].tolist())
         distance = Float32MultiArray(data=result["distance_probability"].tolist())
@@ -252,16 +253,21 @@ class SSLNetAudioNode:
         if "class_id" in result:
             json_result["class_id"] = result["class_id"]
             json_result["class_probability"] = result["class_probability"].tolist()
+        if "signal_probability" in result:
+            json_result["signal_id"] = result.get("signal_id", 1)
+            json_result["signal_prob"] = result.get("signal_prob", 0.0)
+            json_result["signal_probability"] = result["signal_probability"].tolist()
         self.summary_pub.publish(summary)
         self.json_pub.publish(String(data=json.dumps(json_result, ensure_ascii=True)))
         self.doa_pub.publish(doa)
         self.distance_pub.publish(distance)
         self.rospy.loginfo(
-            "SSLNet: doa=%.1f deg distance=%.2f m confidence=(%.3f, %.3f) audio_mean_abs=%.3f inference=%.1f ms",
+            "SSLNet: doa=%.1f deg distance=%.2f m confidence=(%.3f, %.3f) signal=%.3f audio_mean_abs=%.3f inference=%.1f ms",
             result["doa_deg"],
             result["distance_m"],
             result["doa_confidence"],
             result["distance_confidence"],
+            result.get("signal_prob", 1.0),
             result.get("audio_input_mean_abs", 0.0),
             result["inference_ms"],
         )

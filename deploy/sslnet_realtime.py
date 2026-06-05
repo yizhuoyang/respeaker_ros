@@ -54,6 +54,11 @@ def class_count_from_state_dict(state_dict):
     return int(weight.shape[0]) if weight is not None else 0
 
 
+def signal_count_from_state_dict(state_dict):
+    weight = state_dict.get("signal_head.3.weight")
+    return int(weight.shape[0]) if weight is not None else 0
+
+
 def load_trusted_checkpoint(path, device):
     """Load a local training checkpoint while supporting older PyTorch releases."""
     try:
@@ -170,6 +175,7 @@ class SSLNetStreamingPredictor:
             use_compress=self.use_compress,
             audio_in_channels=audio_in_channels,
             num_classes=class_count_from_state_dict(state_dict),
+            signal_classes=signal_count_from_state_dict(state_dict),
         )
         model.load_state_dict(state_dict, strict=True)
         self.model = model.to(self.device).eval()
@@ -231,6 +237,7 @@ class SSLNetStreamingPredictor:
         outputs = self.model(spectrogram)
         doa_probability = torch.softmax(outputs[0], dim=1)[0].cpu().numpy()
         distance_probability = torch.softmax(outputs[1], dim=1)[0].cpu().numpy()
+        output_index = 2
         doa_bin = int(np.argmax(doa_probability))
         distance_bin = int(np.argmax(distance_probability))
         distance_axis = np.linspace(
@@ -245,10 +252,16 @@ class SSLNetStreamingPredictor:
             "distance_probability": distance_probability,
             "inference_ms": float((time.perf_counter() - started_at) * 1000.0),
         }
-        if len(outputs) > 2:
-            class_probability = torch.softmax(outputs[2], dim=1)[0].cpu().numpy()
+        if self.model.class_head is not None:
+            class_probability = torch.softmax(outputs[output_index], dim=1)[0].cpu().numpy()
             result["class_probability"] = class_probability
             result["class_id"] = int(np.argmax(class_probability))
+            output_index += 1
+        if self.model.signal_head is not None:
+            signal_probability = torch.softmax(outputs[output_index], dim=1)[0].cpu().numpy()
+            result["signal_probability"] = signal_probability
+            result["signal_id"] = int(np.argmax(signal_probability))
+            result["signal_prob"] = float(signal_probability[1]) if len(signal_probability) > 1 else 0.0
         return result
 
 

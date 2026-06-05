@@ -45,8 +45,12 @@ def combined_loss(
     class_target=None,
     class_weight=None,
     classification_weight=0.0,
+    signal_logits=None,
+    signal_target=None,
+    signal_weight=0.0,
     has_doa=None,
     classification_only=False,
+    signal_only=False,
 ):
     loss_doa = masked_soft_cross_entropy(logits_doa, target_doa, has_doa)
     loss_dist = masked_soft_cross_entropy(logits_dist, target_dist, has_doa)
@@ -54,11 +58,41 @@ def combined_loss(
         loss_cls = logits_doa.sum() * 0.0
     else:
         loss_cls = F.cross_entropy(class_logits, class_target.long(), weight=class_weight)
+    if signal_logits is None or signal_target is None or signal_weight <= 0:
+        loss_signal = logits_doa.sum() * 0.0
+    else:
+        loss_signal = F.cross_entropy(signal_logits, signal_target.long())
     if classification_only:
         total = loss_cls
-        return total, loss_doa, loss_dist, loss_cls
-    total = loss_doa + distance_weight * loss_dist + classification_weight * loss_cls
-    return total, loss_doa, loss_dist, loss_cls
+        return total, loss_doa, loss_dist, loss_cls, loss_signal
+    if signal_only:
+        total = loss_signal
+        return total, loss_doa, loss_dist, loss_cls, loss_signal
+    total = (
+        loss_doa
+        + distance_weight * loss_dist
+        + classification_weight * loss_cls
+        + signal_weight * loss_signal
+    )
+    return total, loss_doa, loss_dist, loss_cls, loss_signal
+
+
+def unwrap_model(model):
+    return model.module if hasattr(model, "module") else model
+
+
+def unpack_outputs(model, outputs):
+    base = unwrap_model(model)
+    logits_doa, logits_dist = outputs[:2]
+    index = 2
+    class_logits = None
+    signal_logits = None
+    if getattr(base, "class_head", None) is not None:
+        class_logits = outputs[index]
+        index += 1
+    if getattr(base, "signal_head", None) is not None:
+        signal_logits = outputs[index]
+    return logits_doa, logits_dist, class_logits, signal_logits
 
 
 def train_one_epoch(
@@ -72,8 +106,10 @@ def train_one_epoch(
     criterion=None,
     distance_weight=0,
     classification_weight=0.0,
+    signal_weight=0.0,
     class_weights=None,
     classification_only=False,
+    signal_only=False,
     gate_doa_by_pred_class=False,
     signal_class_id=2,
     freeze_classifier_eval=False,
@@ -81,12 +117,17 @@ def train_one_epoch(
     model.train()
     if freeze_classifier_eval:
         set_classifier_gate_modules_eval(model)
+    if signal_only:
+        set_non_signal_modules_eval(model)
     running_loss = 0.0
     running_doa = 0.0
     running_dist = 0.0
     running_cls = 0.0
+    running_signal = 0.0
     running_cls_correct = 0
     running_cls_total = 0
+    running_signal_correct = 0
+    running_signal_total = 0
     running_gate_active = 0
     running_gate_total = 0
     running_doa_error_deg = 0.0
@@ -101,16 +142,18 @@ def train_one_epoch(
         target_doa = batch["doa_map"].to(device, non_blocking=True)
         target_dist = batch["distant_map"].to(device, non_blocking=True)
         class_target = batch.get("class_label")
+        signal_target = batch.get("signal_label")
         has_doa = batch.get("has_doa")
         if class_target is not None:
             class_target = class_target.to(device, non_blocking=True)
+        if signal_target is not None:
+            signal_target = signal_target.to(device, non_blocking=True)
         if has_doa is not None:
             has_doa = has_doa.to(device, non_blocking=True)
 
         optimizer.zero_grad(set_to_none=True)
         outputs = model(spectrogram, depth)
-        logits_doa, logits_dist = outputs[:2]
-        class_logits = outputs[2] if len(outputs) > 2 else None
+        logits_doa, logits_dist, class_logits, signal_logits = unpack_outputs(model, outputs)
         loss_mask = has_doa
         if gate_doa_by_pred_class and class_logits is not None:
             pred_signal = class_logits.detach().argmax(dim=1) == int(signal_class_id)
@@ -121,7 +164,7 @@ def train_one_epoch(
         doa_errors_deg = doa_peak_absolute_errors_deg(logits_doa.detach(), target_doa, has_doa)
         running_doa_error_deg += float(doa_errors_deg.sum().item())
         running_doa_error_count += int(doa_errors_deg.numel())
-        loss, loss_doa, loss_dist, loss_cls = combined_loss(
+        loss, loss_doa, loss_dist, loss_cls, loss_signal = combined_loss(
             logits_doa,
             logits_dist,
             target_doa,
@@ -131,8 +174,12 @@ def train_one_epoch(
             class_target=class_target,
             class_weight=class_weights,
             classification_weight=classification_weight,
+            signal_logits=signal_logits,
+            signal_target=signal_target,
+            signal_weight=signal_weight,
             has_doa=loss_mask,
             classification_only=classification_only,
+            signal_only=signal_only,
         )
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
@@ -143,9 +190,13 @@ def train_one_epoch(
         running_doa += loss_doa.item() * batch_size
         running_dist += loss_dist.item() * batch_size
         running_cls += loss_cls.item() * batch_size
+        running_signal += loss_signal.item() * batch_size
         if class_logits is not None and class_target is not None:
             running_cls_correct += (class_logits.argmax(dim=1) == class_target).sum().item()
             running_cls_total += batch_size
+        if signal_logits is not None and signal_target is not None:
+            running_signal_correct += (signal_logits.argmax(dim=1) == signal_target).sum().item()
+            running_signal_total += batch_size
         n_samples += batch_size
 
         if writer is not None:
@@ -153,6 +204,7 @@ def train_one_epoch(
             writer.add_scalar("Loss/train_step_doa", loss_doa.item(), global_step)
             writer.add_scalar("Loss/train_step_distance", loss_dist.item(), global_step)
             writer.add_scalar("Loss/train_step_class", loss_cls.item(), global_step)
+            writer.add_scalar("Loss/train_step_signal", loss_signal.item(), global_step)
         global_step += 1
 
     metrics = {
@@ -160,7 +212,9 @@ def train_one_epoch(
         "loss_doa": running_doa / max(n_samples, 1),
         "loss_distance": running_dist / max(n_samples, 1),
         "loss_class": running_cls / max(n_samples, 1),
+        "loss_signal": running_signal / max(n_samples, 1),
         "class_acc": running_cls_correct / max(running_cls_total, 1),
+        "signal_acc": running_signal_correct / max(running_signal_total, 1),
         "gate_active_ratio": running_gate_active / max(running_gate_total, 1),
         "doa_mae_deg": running_doa_error_deg / max(running_doa_error_count, 1),
     }
@@ -169,13 +223,16 @@ def train_one_epoch(
         writer.add_scalar("Loss/train_epoch_doa", metrics["loss_doa"], epoch)
         writer.add_scalar("Loss/train_epoch_distance", metrics["loss_distance"], epoch)
         writer.add_scalar("Loss/train_epoch_class", metrics["loss_class"], epoch)
+        writer.add_scalar("Loss/train_epoch_signal", metrics["loss_signal"], epoch)
         writer.add_scalar("Metric/train_class_acc", metrics["class_acc"], epoch)
+        writer.add_scalar("Metric/train_signal_acc", metrics["signal_acc"], epoch)
         writer.add_scalar("Metric/train_gate_active_ratio", metrics["gate_active_ratio"], epoch)
         writer.add_scalar("Metric/train_doa_mae_deg", metrics["doa_mae_deg"], epoch)
     print(
         f"Train DOA peak MAE: {metrics['doa_mae_deg']:.3f} deg "
         f"({running_doa_error_count} labeled samples) | "
-        f"gate active ratio: {metrics['gate_active_ratio']:.4f}"
+        f"gate active ratio: {metrics['gate_active_ratio']:.4f} | "
+        f"signal acc: {metrics['signal_acc']:.4f}"
     )
     return metrics["loss"], global_step
 
@@ -191,8 +248,10 @@ def validate(
     criterion=None,
     distance_weight=0,
     classification_weight=0.0,
+    signal_weight=0.0,
     class_weights=None,
     classification_only=False,
+    signal_only=False,
     gate_doa_by_pred_class=False,
     signal_class_id=2,
 ):
@@ -201,8 +260,11 @@ def validate(
     running_doa = 0.0
     running_dist = 0.0
     running_cls = 0.0
+    running_signal = 0.0
     running_cls_correct = 0
     running_cls_total = 0
+    running_signal_correct = 0
+    running_signal_total = 0
     running_gate_active = 0
     running_gate_total = 0
     running_doa_error_deg = 0.0
@@ -218,15 +280,17 @@ def validate(
         target_doa = batch["doa_map"].to(device, non_blocking=True)
         target_dist = batch["distant_map"].to(device, non_blocking=True)
         class_target = batch.get("class_label")
+        signal_target = batch.get("signal_label")
         has_doa = batch.get("has_doa")
         if class_target is not None:
             class_target = class_target.to(device, non_blocking=True)
+        if signal_target is not None:
+            signal_target = signal_target.to(device, non_blocking=True)
         if has_doa is not None:
             has_doa = has_doa.to(device, non_blocking=True)
 
         outputs = model(spectrogram, depth)
-        logits_doa, logits_dist = outputs[:2]
-        class_logits = outputs[2] if len(outputs) > 2 else None
+        logits_doa, logits_dist, class_logits, signal_logits = unpack_outputs(model, outputs)
         loss_mask = has_doa
         if gate_doa_by_pred_class and class_logits is not None:
             pred_signal = class_logits.detach().argmax(dim=1) == int(signal_class_id)
@@ -237,7 +301,7 @@ def validate(
         doa_errors_deg = doa_peak_absolute_errors_deg(logits_doa, target_doa, has_doa)
         running_doa_error_deg += float(doa_errors_deg.sum().item())
         running_doa_error_count += int(doa_errors_deg.numel())
-        loss, loss_doa, loss_dist, loss_cls = combined_loss(
+        loss, loss_doa, loss_dist, loss_cls, loss_signal = combined_loss(
             logits_doa,
             logits_dist,
             target_doa,
@@ -247,8 +311,12 @@ def validate(
             class_target=class_target,
             class_weight=class_weights,
             classification_weight=classification_weight,
+            signal_logits=signal_logits,
+            signal_target=signal_target,
+            signal_weight=signal_weight,
             has_doa=loss_mask,
             classification_only=classification_only,
+            signal_only=signal_only,
         )
 
         batch_size = spectrogram.size(0)
@@ -256,9 +324,13 @@ def validate(
         running_doa += loss_doa.item() * batch_size
         running_dist += loss_dist.item() * batch_size
         running_cls += loss_cls.item() * batch_size
+        running_signal += loss_signal.item() * batch_size
         if class_logits is not None and class_target is not None:
             running_cls_correct += (class_logits.argmax(dim=1) == class_target).sum().item()
             running_cls_total += batch_size
+        if signal_logits is not None and signal_target is not None:
+            running_signal_correct += (signal_logits.argmax(dim=1) == signal_target).sum().item()
+            running_signal_total += batch_size
         n_samples += batch_size
 
         if first_batch_for_plot is None:
@@ -274,7 +346,9 @@ def validate(
         "loss_doa": running_doa / max(n_samples, 1),
         "loss_distance": running_dist / max(n_samples, 1),
         "loss_class": running_cls / max(n_samples, 1),
+        "loss_signal": running_signal / max(n_samples, 1),
         "class_acc": running_cls_correct / max(running_cls_total, 1),
+        "signal_acc": running_signal_correct / max(running_signal_total, 1),
         "gate_active_ratio": running_gate_active / max(running_gate_total, 1),
         "doa_mae_deg": running_doa_error_deg / max(running_doa_error_count, 1),
     }
@@ -283,7 +357,9 @@ def validate(
         writer.add_scalar("Loss/val_epoch_doa", metrics["loss_doa"], epoch)
         writer.add_scalar("Loss/val_epoch_distance", metrics["loss_distance"], epoch)
         writer.add_scalar("Loss/val_epoch_class", metrics["loss_class"], epoch)
+        writer.add_scalar("Loss/val_epoch_signal", metrics["loss_signal"], epoch)
         writer.add_scalar("Metric/val_class_acc", metrics["class_acc"], epoch)
+        writer.add_scalar("Metric/val_signal_acc", metrics["signal_acc"], epoch)
         writer.add_scalar("Metric/val_gate_active_ratio", metrics["gate_active_ratio"], epoch)
         writer.add_scalar("Metric/val_doa_mae_deg", metrics["doa_mae_deg"], epoch)
         if first_batch_for_plot is not None and (epoch == 1 or epoch % 5 == 0):
@@ -291,7 +367,8 @@ def validate(
     print(
         f"Val DOA peak MAE: {metrics['doa_mae_deg']:.3f} deg "
         f"({running_doa_error_count} labeled samples) | "
-        f"gate active ratio: {metrics['gate_active_ratio']:.4f}"
+        f"gate active ratio: {metrics['gate_active_ratio']:.4f} | "
+        f"signal acc: {metrics['signal_acc']:.4f}"
     )
     return metrics["loss"]
 
@@ -304,9 +381,17 @@ def set_classifier_gate_modules_eval(model):
         "film_beta",
         "fusion_fc",
         "class_head",
+        "signal_head",
     ]:
         module = getattr(model, name, None)
         if module is not None:
+            module.eval()
+
+
+def set_non_signal_modules_eval(model):
+    base = unwrap_model(model)
+    for name, module in base.named_modules():
+        if name and name != "signal_head" and not name.startswith("signal_head."):
             module.eval()
 
 

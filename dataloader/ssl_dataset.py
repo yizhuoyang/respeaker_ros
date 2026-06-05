@@ -1,5 +1,6 @@
 from pathlib import Path
 import re
+import wave
 
 import numpy as np
 import torch
@@ -59,6 +60,15 @@ MOVING_SOUND_CLASS = 1
 SIGNAL_STATIC_CLASS = 2
 
 
+def audio_frame_count(path):
+    try:
+        with wave.open(str(path), "rb") as handle:
+            return int(handle.getnframes())
+    except Exception:
+        audio, _ = load_audio_wav(path, (0,))
+        return int(audio.shape[1])
+
+
 class SingleStepDataset(Dataset):
     """Dataset for synced odom labels or pairs_ros1 labelCloud bbox labels."""
 
@@ -112,6 +122,9 @@ class SingleStepDataset(Dataset):
         noise_aug_prob=1.0,
         noise_aug_snr_min_db=0.0,
         noise_aug_snr_max_db=25.0,
+        signal_detection_enabled=False,
+        signal_noise_paths=None,
+        signal_noise_root=None,
         split=None,
         object_names=None,
         min_distance=None,
@@ -173,6 +186,10 @@ class SingleStepDataset(Dataset):
         self.noise_aug_snr_max_db = float(noise_aug_snr_max_db)
         if self.noise_aug_snr_min_db > self.noise_aug_snr_max_db:
             raise ValueError("noise_aug_snr_min_db must be <= noise_aug_snr_max_db")
+        self.signal_detection_enabled = bool(signal_detection_enabled)
+        self.signal_noise_paths = self._resolve_signal_noise_paths(
+            signal_noise_paths, signal_noise_root
+        )
         self.split = split
         self.object_names = parse_name_filter(object_names)
         self.min_distance = min_distance
@@ -183,6 +200,7 @@ class SingleStepDataset(Dataset):
         self.audio_bandpass_high_hz = float(audio_bandpass_high_hz or 0.0)
         self.skipped_by_distance = 0
         self.skipped_by_signal_amplitude = 0
+        self.signal_detection_target_frames = None
         self._stationary_noise_profile_by_sample_rate = {}
         self._motion_noise_profile_by_sample_rate = {}
         self.noise_aug_paths = self._resolve_noise_aug_paths(noise_aug_paths, noise_aug_root)
@@ -207,6 +225,11 @@ class SingleStepDataset(Dataset):
                 f"[SingleStepDataset] split={self.split}: noise augmentation "
                 f"files={len(self.noise_aug_paths)} prob={self.noise_aug_prob:g} "
                 f"snr=[{self.noise_aug_snr_min_db:g}, {self.noise_aug_snr_max_db:g}] dB"
+            )
+        if self.signal_detection_enabled:
+            print(
+                f"[SingleStepDataset] split={self.split}: signal detection "
+                f"noise_files={len(self.signal_noise_paths)}"
             )
 
     def _collect_samples(self):
@@ -250,6 +273,8 @@ class SingleStepDataset(Dataset):
                     continue
                 if self.require_rgb and color_path is None and not is_noise:
                     continue
+                if self.signal_detection_target_frames is None:
+                    self.signal_detection_target_frames = audio_frame_count(audio_path)
                 distance_xy = np.nan
                 if has_doa:
                     distance_xy = self._load_distance_xy(doa_path, distance_path)
@@ -271,8 +296,11 @@ class SingleStepDataset(Dataset):
                     "distance_xy": distance_xy,
                     "odom": odom_path if odom_path.exists() else None,
                     "class_label": class_label,
+                    "signal_label": 1,
                     "has_doa": has_doa,
                 })
+        if self.signal_detection_enabled:
+            samples.extend(self._collect_signal_noise_samples())
         return samples
 
     def _collect_pairs_samples(self, dataset_dir):
@@ -301,6 +329,8 @@ class SingleStepDataset(Dataset):
                 continue
             if self.require_rgb and rgb_path is None:
                 continue
+            if self.signal_detection_target_frames is None:
+                self.signal_detection_target_frames = audio_frame_count(audio_path)
             samples.append({
                 "dataset_dir": dataset_dir,
                 "sample_id": sample_id,
@@ -315,7 +345,27 @@ class SingleStepDataset(Dataset):
                 "target_x": target["x"],
                 "target_y": target["y"],
                 "class_label": SIGNAL_STATIC_CLASS,
+                "signal_label": 1,
                 "has_doa": True,
+            })
+        return samples
+
+    def _collect_signal_noise_samples(self):
+        samples = []
+        for index, audio_path in enumerate(self.signal_noise_paths):
+            samples.append({
+                "dataset_dir": audio_path.parent,
+                "sample_id": f"noise_{index}_{audio_path.stem}",
+                "audio": audio_path,
+                "depth": None,
+                "rgb": None,
+                "doa": None,
+                "distance": None,
+                "distance_xy": np.nan,
+                "odom": None,
+                "class_label": ROBOT_NOISE_CLASS,
+                "signal_label": 0,
+                "has_doa": False,
             })
         return samples
 
@@ -370,9 +420,12 @@ class SingleStepDataset(Dataset):
         item = self.file_list[idx]
 
         audio, sample_rate = load_audio_wav(item["audio"], self.audio_channels)
+        if int(item.get("signal_label", 1)) == 0:
+            audio = self._sample_noise_segment(audio, self._signal_target_frames(audio)).astype(np.float32)
         audio = self._maybe_filter_mute_audio(audio, sample_rate)
         audio = self._maybe_denoise_audio(audio, sample_rate)
-        audio = self._maybe_apply_noise_augmentation(audio, sample_rate)
+        if int(item.get("signal_label", 1)) != 0:
+            audio = self._maybe_apply_noise_augmentation(audio, sample_rate)
         audio = self._maybe_apply_audio_bandpass(audio, sample_rate)
         depth = (
             load_image(item["depth"], normalize_rgb=False, image_size=self.image_size)
@@ -474,6 +527,7 @@ class SingleStepDataset(Dataset):
             "dataset_dir": str(item["dataset_dir"]),
             "sample_rate": sample_rate,
             "class_label": torch.as_tensor(int(item.get("class_label", SIGNAL_STATIC_CLASS)), dtype=torch.long),
+            "signal_label": torch.as_tensor(int(item.get("signal_label", 1)), dtype=torch.long),
             "has_doa": torch.as_tensor(has_doa, dtype=torch.bool),
         }
 
@@ -512,6 +566,39 @@ class SingleStepDataset(Dataset):
             )
         return tuple(unique_paths)
 
+    def _resolve_signal_noise_paths(self, signal_noise_paths, signal_noise_root):
+        if not self.signal_detection_enabled:
+            return tuple()
+        paths = []
+        for value in signal_noise_paths or []:
+            candidate = Path(value).expanduser()
+            if candidate.is_dir():
+                paths.extend(sorted(candidate.glob("*.wav")))
+            else:
+                paths.append(candidate)
+        if signal_noise_root:
+            root = Path(signal_noise_root).expanduser()
+            paths.extend(sorted(root.glob("*.wav")) if root.is_dir() else [root])
+        if not paths:
+            default_root = self.root_dir / "noise"
+            if default_root.is_dir():
+                paths.extend(sorted(default_root.glob("*.wav")))
+        unique_paths = []
+        seen = set()
+        for path in paths:
+            resolved = path.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            if resolved.is_file():
+                unique_paths.append(resolved)
+        if not unique_paths:
+            raise RuntimeError(
+                "Signal detection is enabled, but no noise wav files were found. "
+                "Set --signal-noise-root or --signal-noise-path, or place wav files under <data-root>/noise."
+            )
+        return tuple(unique_paths)
+
     def _load_noise_aug_audio(self, noise_path):
         cache_key = str(noise_path)
         if cache_key not in self._noise_aug_cache:
@@ -528,6 +615,11 @@ class SingleStepDataset(Dataset):
         repeats = int(np.ceil(float(target_frames) / float(max(noise.shape[1], 1))))
         tiled = np.tile(noise, (1, repeats))
         return tiled[:, :target_frames]
+
+    def _signal_target_frames(self, audio):
+        if self.signal_detection_target_frames is not None and self.signal_detection_target_frames > 0:
+            return int(self.signal_detection_target_frames)
+        return int(audio.shape[1])
 
     def _maybe_apply_noise_augmentation(self, audio, sample_rate):
         if (

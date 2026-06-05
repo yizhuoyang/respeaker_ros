@@ -91,6 +91,7 @@ class SSLNetAudioMapFusionNode:
         self.max_audio_input_mean_abs = float(
             rospy.get_param("~max_audio_input_mean_abs", 0.06)
         )
+        self.min_signal_prob = float(rospy.get_param("~min_signal_prob", 0.5))
         self.frame_id_override = rospy.get_param("~frame_id", "")
         self.marker_height = float(rospy.get_param("~marker_height", 0.12))
         self.map_alpha_threshold = float(rospy.get_param("~map_alpha_threshold", 0.0))
@@ -349,19 +350,28 @@ class SSLNetAudioMapFusionNode:
             pose = odom.pose.pose.position
             yaw = quaternion_to_yaw(odom.pose.pose.orientation)
             confidence = float(summary.get("doa_confidence", 1.0))
+            signal_prob = float(summary.get("signal_prob", 1.0))
             audio_input_mean_abs = summary.get("audio_input_mean_abs")
             audio_too_loud = (
                 audio_input_mean_abs is not None
                 and self.max_audio_input_mean_abs > 0.0
                 and float(audio_input_mean_abs) > self.max_audio_input_mean_abs
             )
-            update_intensity = 0.0 if audio_too_loud else confidence
+            no_signal = signal_prob < self.min_signal_prob
+            update_intensity = 0.0 if (audio_too_loud or no_signal) else confidence
             if audio_too_loud:
                 self.rospy.logwarn_throttle(
                     2.0,
                     "Skip audio map update because network input mean abs %.3f > %.3f",
                     float(audio_input_mean_abs),
                     self.max_audio_input_mean_abs,
+                )
+            if no_signal:
+                self.rospy.logwarn_throttle(
+                    2.0,
+                    "Skip audio map update because signal_prob %.3f < %.3f",
+                    signal_prob,
+                    self.min_signal_prob,
                 )
             if not self.fusion.inited and self.map_center_pose is not None:
                 self.fusion.reset(new_center_pose=self.map_center_pose, clear_bins=False)
@@ -385,6 +395,8 @@ class SSLNetAudioMapFusionNode:
                 confidence,
                 audio_input_mean_abs=audio_input_mean_abs,
                 audio_too_loud=audio_too_loud,
+                signal_prob=signal_prob,
+                no_signal=no_signal,
             )
 
             with self.lock:
@@ -403,6 +415,8 @@ class SSLNetAudioMapFusionNode:
         confidence,
         audio_input_mean_abs=None,
         audio_too_loud=False,
+        signal_prob=1.0,
+        no_signal=False,
     ):
         self.map_pub.publish(self.make_map(output, frame_id, stamp))
         self.argmax_pub.publish(self.make_argmax_point(output, frame_id, stamp))
@@ -419,6 +433,9 @@ class SSLNetAudioMapFusionNode:
                 None if audio_input_mean_abs is None else float(audio_input_mean_abs)
             ),
             "audio_too_loud": bool(audio_too_loud),
+            "signal_prob": float(signal_prob),
+            "no_signal": bool(no_signal),
+            "min_signal_prob": float(self.min_signal_prob),
             "frame_id": frame_id,
             "frame_count": int(output["t"]),
             "stamp": stamp.to_sec(),
@@ -427,12 +444,13 @@ class SSLNetAudioMapFusionNode:
 
         self.argmax_json_pub.publish(String(data=json.dumps(payload, ensure_ascii=True)))
         self.rospy.loginfo(
-            "AudioMap: source=(%.2f, %.2f) frame=%s update=%s confidence=%.3f",
+            "AudioMap: source=(%.2f, %.2f) frame=%s update=%s confidence=%.3f signal=%.3f",
             estimate[0],
             estimate[1],
             frame_id,
             output["do_update"],
             confidence,
+            signal_prob,
         )
 
     def make_map(self, output, frame_id, stamp):
