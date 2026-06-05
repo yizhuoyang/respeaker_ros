@@ -578,7 +578,7 @@ ROS map: x/y 平面与 odom yaw
 叠加。
 
 默认实时配置订阅 `/Odometry`，并使用与 visual map 一致的固定地图中心 `(0.0, 0.0)`、
-`12.0 m x 12.0 m` 地图和 `0.05 m/cell` 分辨率。在音频推理节点与 odom topic
+`10.0 m x 10.0 m` 地图和 `0.05 m/cell` 分辨率。在音频推理节点与 odom topic
 已经运行时直接启动：
 
 ```bash
@@ -736,7 +736,7 @@ rostopic hz /sslnet_audio_inference/distance_distribution
 
 ```bash
 python deploy/ros1_sslnet_audio_map_fusion.py \
-  _map_size_m:=12.0 \
+  _map_size_m:=10.0 \
   _resolution:=0.05 \
   _beta_r:=0.05 \
   _sigma_Q_cells:=1.5 \
@@ -809,7 +809,7 @@ python deploy/ros1_sslnet_fake_prediction.py \
 ```bash
 python deploy/ros1_sslnet_audio_map_fusion.py \
   _odom_topic:=/lio/odom \
-  _map_size_m:=12.0 \
+  _map_size_m:=10.0 \
   _resolution:=0.05 \
   _max_distance_m:=6.0 \
   _min_confidence:=0.0
@@ -902,7 +902,7 @@ python deploy/ros1_sslnet_fake_prediction.py \
 ## 8. 与 YOLOE Visual Map 联合运行
 
 `deploy_yolo/ros1_yoloe_visual_map.py` 会将 RGB-D 检测目标累计为全局视觉占据图。两张
-地图默认都使用 `12.0 m x 12.0 m` 与 `0.05 m/cell`，默认固定中心也均为
+地图默认都使用 `10.0 m x 10.0 m` 与 `0.05 m/cell`，默认固定中心也均为
 `(0.0, 0.0)`，当前实时配置可直接启动并叠加：
 
 ```bash

@@ -209,7 +209,7 @@ class YOLOEVisualMapNode:
             "~camera_info_topic", "/camera/color/camera_info"
         )
         self.odom_topic = rospy.get_param("~odom_topic", "/Odometry")
-        self.use_audio_map_geometry = bool(rospy.get_param("~use_audio_map_geometry", False))
+        self.use_audio_map_geometry = bool(rospy.get_param("~use_audio_map_geometry", True))
         self.audio_map_topic = rospy.get_param("~audio_map_topic", "/sslnet_audio_map/map")
         self.camera_frame_override = rospy.get_param("~camera_frame", "")
         self.map_frame_override = rospy.get_param("~map_frame", "")
@@ -253,7 +253,7 @@ class YOLOEVisualMapNode:
         )
         self.tf_timeout = max(float(rospy.get_param("~tf_timeout_sec", 0.0)), 0.0)
 
-        self.map_size_m = float(rospy.get_param("~map_size_m", 12.0))
+        self.map_size_m = float(rospy.get_param("~map_size_m", 10.0))
         self.resolution = float(rospy.get_param("~resolution", 0.05))
         map_center_x = rospy.get_param("~map_center_x", 0.0)
         map_center_y = rospy.get_param("~map_center_y", 0.0)
@@ -542,6 +542,15 @@ class YOLOEVisualMapNode:
             if self.geometry is not None:
                 return True
             odom = self.latest_odom
+        if self.use_audio_map_geometry:
+            self.last_status = "waiting_for_audio_map_geometry"
+            self.rospy.logwarn_throttle(
+                5.0,
+                "Waiting for audio map geometry from %s before publishing visual map. "
+                "This keeps visual/audio/fusion maps in the same global odom grid.",
+                self.audio_map_topic,
+            )
+            return False
         if odom is None:
             self.last_status = "waiting_for_odom"
             return False

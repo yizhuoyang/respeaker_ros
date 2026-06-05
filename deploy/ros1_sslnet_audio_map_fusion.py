@@ -77,7 +77,7 @@ class SSLNetAudioMapFusionNode:
         )
         self.min_confidence = float(rospy.get_param("~min_confidence", 0.2))
         self.fusion = StreamingSourceMapFusion(
-            map_size_m=float(rospy.get_param("~map_size_m", 12.0)),
+            map_size_m=float(rospy.get_param("~map_size_m", 10.0)),
             res=resolution,
             node_res=float(rospy.get_param("~argmax_resolution", resolution)),
             sigma_Q_cells=float(rospy.get_param("~sigma_Q_cells", 1.5)),
