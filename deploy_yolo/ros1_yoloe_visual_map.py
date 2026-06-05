@@ -137,6 +137,17 @@ def color_for_class(class_id):
     return colors[int(class_id) % len(colors)]
 
 
+def normalize_class_name(name):
+    return str(name).strip().lower().replace("_", " ")
+
+
+def parse_class_filter(class_text):
+    tokens = [text.strip() for text in str(class_text).split(",") if text.strip()]
+    if not tokens or any(token.lower() in ("*", "all", "none") for token in tokens):
+        return tokens, set()
+    return tokens, {normalize_class_name(token) for token in tokens}
+
+
 class VisualMapGeometry:
     def __init__(self, frame_id, resolution, width, height, origin_x, origin_y):
         self.frame_id = str(frame_id)
@@ -211,7 +222,8 @@ class YOLOEVisualMapNode:
         self.model_path = rospy.get_param("~model", default_model_path)
         self.exported_engine = Path(self.model_path).suffix.lower() == ".engine"
         class_text = rospy.get_param("~classes", "person")
-        self.classes = [text.strip() for text in class_text.split(",") if text.strip()]
+        self.classes, self.class_filter = parse_class_filter(class_text)
+        self.class_filter_enabled = bool(self.class_filter)
         self.confidence_threshold = float(rospy.get_param("~conf", 0.5))
         if not 0.0 <= self.confidence_threshold <= 1.0:
             raise ValueError("~conf must be between 0.0 and 1.0.")
@@ -419,15 +431,16 @@ class YOLOEVisualMapNode:
                 self.model.set_classes(self.classes)
             elif self.classes and self.exported_engine:
                 self.rospy.logwarn(
-                    "Ignoring ~classes=%s for TensorRT engine %s. Exported YOLOE engines "
-                    "have static classes; set prompts on the .pt model before export.",
-                    self.classes,
+                    "TensorRT engine %s has static classes; ~classes=%s will be used "
+                    "as a post-filter for annotated image, map accumulation, and markers.",
                     self.model_path,
+                    self.classes,
                 )
             self.rospy.loginfo(
-                "Loaded YOLOE model=%s classes=%s exported_engine=%s",
+                "Loaded YOLOE model=%s classes=%s class_filter=%s exported_engine=%s",
                 self.model_path,
                 "embedded in engine" if self.exported_engine else (self.classes or "default LVIS/prompts"),
+                sorted(self.class_filter) if self.class_filter_enabled else "disabled",
                 self.exported_engine,
             )
             return True
@@ -716,11 +729,12 @@ class YOLOEVisualMapNode:
             self.rospy.logerr_throttle(5.0, "YOLOE inference failed: %s", exc)
             return
 
-        self.publish_annotated_image(result, rgb_msg.header)
         self.frames_inferred += 1
         self.latest_raw_detection_count = (
             int(len(result.boxes)) if result.boxes is not None else 0
         )
+        result = self.filter_result_by_classes(result)
+        self.publish_annotated_image(result, rgb_msg.header)
         self.latest_depth_rejected_count = 0
         self.latest_out_of_map_count = 0
         self.latest_map_updated_count = 0
@@ -785,6 +799,46 @@ class YOLOEVisualMapNode:
         self.latest_map_updated_count = updated_count
         self.latest_out_of_map_count = out_of_map_count
         self.last_status = "running"
+
+    @staticmethod
+    def result_class_label(names, class_id):
+        class_id = int(class_id)
+        if isinstance(names, dict):
+            return str(names.get(class_id, class_id))
+        try:
+            return str(names[class_id])
+        except Exception:
+            return str(class_id)
+
+    def class_allowed(self, label, class_id):
+        if not self.class_filter_enabled:
+            return True
+        normalized = normalize_class_name(label)
+        class_id_text = str(int(class_id))
+        return normalized in self.class_filter or class_id_text in self.class_filter
+
+    def filter_result_by_classes(self, result):
+        if not self.class_filter_enabled or result.boxes is None:
+            return result
+        class_ids = result.boxes.cls.detach().cpu().numpy().astype(np.int32)
+        keep_indices = [
+            index
+            for index, class_id in enumerate(class_ids)
+            if self.class_allowed(self.result_class_label(result.names, class_id), class_id)
+        ]
+        if len(keep_indices) == len(class_ids):
+            return result
+        try:
+            return result[keep_indices]
+        except Exception as exc:
+            self.rospy.logwarn_throttle(
+                5.0,
+                "Cannot slice YOLO result for class filter %s: %s. "
+                "Annotated image may still show all detections, but map and markers are filtered.",
+                sorted(self.class_filter),
+                exc,
+            )
+            return result
 
     def shutdown(self):
         if self.stop_event.is_set():
@@ -857,6 +911,9 @@ class YOLOEVisualMapNode:
         for index, (confidence, class_id) in enumerate(zip(confidences, class_ids)):
             if float(confidence) < self.confidence_threshold:
                 continue
+            label = self.result_class_label(names, class_id)
+            if not self.class_allowed(label, class_id):
+                continue
             if masks is not None:
                 mask = masks[index]
                 if mask.shape != (height, width):
@@ -877,7 +934,6 @@ class YOLOEVisualMapNode:
             )
             world_points = point_transform(footprint_points)
             center = point_transform(center_point[None, :])[0]
-            label = names.get(int(class_id), str(int(class_id))) if isinstance(names, dict) else names[int(class_id)]
             detections.append(
                 {
                     "class_id": int(class_id),
@@ -1236,6 +1292,9 @@ class YOLOEVisualMapNode:
             "model": self.model_path,
             "model_loaded": self.model is not None,
             "model_error": self.model_error,
+            "classes": self.classes,
+            "class_filter_enabled": self.class_filter_enabled,
+            "class_filter": sorted(self.class_filter),
             "confidence_threshold": self.confidence_threshold,
             "projection_pose_source": self.projection_pose_source,
             "broadcast_odom_tf": self.broadcast_odom_tf,

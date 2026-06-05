@@ -30,7 +30,7 @@ annotated image 中，但不会写入 visual map。
 /camera/depth/image_rect_raw  sensor_msgs/Image，与 RGB 像素对齐的深度图
 /camera/color/camera_info     sensor_msgs/CameraInfo，RGB/对齐深度相机内参
 /Odometry                     nav_msgs/Odometry，未收到 audio map 时用于初始化地图
-/sslnet_audio_map/map         nav_msgs/OccupancyGrid，仅启用 `_use_audio_map_geometry:=true` 时使用
+/sslnet_audio_map/map         nav_msgs/OccupancyGrid，默认用于复制 audio map 的 frame/origin/resolution
 ```
 
 深度必须已注册到 RGB 图像：同一个像素位置应代表同一个物体点。如果相机驱动提供
@@ -130,11 +130,13 @@ yoloe-v8s-seg.pt
 ```
 
 `.pt` 模型使用 text prompts 指定目标类别，默认仅寻找 `person`；可通过 `_classes`
-修改。节点也支持 TensorRT `.engine`：
+修改。节点也支持 TensorRT `.engine`。运行时 `_classes` 还会作为后过滤器使用，
+只有匹配类别会写入 visual map，并出现在 `/yoloe_visual_map/annotated_image` 中：
 
 - segmentation engine 使用 mask 中央区域的 median depth 定位物体中心，减少边缘背景深度污染。
 - detection engine 没有 mask 时，节点使用检测框内部区域的有效深度估计物体位置。
-- `.engine` 的类别在导出时已经固定，运行时 `_classes` 会被忽略。
+- `.engine` 的类别在导出时已经固定，运行时 `_classes` 不能新增 engine 未包含的类别，
+  但可以从 engine 输出类别中筛选，例如只保留 `guitar`。
 
 导出 YOLOE TensorRT segmentation engine 时，应在 `.pt` 模型上先设置目标类别：
 
@@ -294,6 +296,7 @@ TensorRT 环境或 GPU 推理是否阻塞。TF 查询默认使用 `_tf_timeout_s
 
 ```text
 waiting_for_camera_info       未收到相机内参
+waiting_for_audio_map_geometry 默认坐标模式下尚未收到 /sslnet_audio_map/map
 waiting_for_odom              未收到 odom，无法确定独立地图的 frame
 waiting_for_depth_image       latest 配对模式下尚未收到 depth 图像
 waiting_for_recent_depth_image 最近 depth 与 RGB 时间差超过允许值
@@ -316,11 +319,13 @@ rosservice call /yoloe_visual_map/reset
 常用参数：
 
 ```text
-_conf:=0.50                 YOLOE 检测筛选阈值；调试漏检时可显式设为 0.10
+_conf:=0.10                 YOLOE 检测筛选阈值；也兼容 _confidence_threshold/_conf_thres/_conf_thred
 _imgsz:=640                 推理输入尺寸
 _device:=0                  GPU；CPU 可设置为 cpu
 _model:=deploy_yolo/yoloe-11s-seg.engine 默认使用本目录导出的 TensorRT segmentation engine
+_classes:=guitar           运行时后过滤类别；只把该类别写入 map/annotated image
 _depth_topic:=/camera/depth/image_rect_raw 默认 depth 输入 topic
+_depth_camera_info_topic:=/camera/depth/camera_info 默认 depth 内参；RGB resize 到 depth 时用于反投影
 _odom_topic:=/Odometry      默认 odom 输入 topic
 _min_depth_m:=0.20          使用的最小深度
 _max_depth_m:=4.0           每帧仅将 4 m 以内的检测目标写入 visual map
@@ -328,7 +333,11 @@ _resize_rgb_to_depth:=true  尺寸不同时，缩放 RGB 至 depth 尺寸并保�
 _image_pairing_mode:=latest 实时输入按最近 depth 配对；严格同步可设置 approximate
 _max_rgb_depth_age_sec:=0.25 latest 模式允许的最大 RGB-depth 时间差；负值不检查
 _sync_slop_sec:=0.05        approximate 模式下的时间戳容差
+_output_stamp_mode:=current RViz 输出时间戳；current 可避免旧图像时间导致 MessageFilter 丢弃
 _projection_pose_source:=odom 用 odom 直接定位；准确外参投影可设置 tf
+_max_odom_diff_sec:=0.50    odom 投影时 RGB 帧可匹配的最大 odom 时间差
+_camera_offset_x/y/z:=0     odom 投影模式下，相机坐标相对 odom child/body 的平移外参，单位 m
+_camera_roll_deg/_camera_pitch_deg/_camera_yaw_deg:=0 odom 投影模式下，相机相对 odom child/body 的旋转外参
 _tf_timeout_sec:=0.0        TF 非阻塞查询；bag/仿真时间下避免缺 TF 阻塞 worker
 _broadcast_odom_tf:=false   依据 odom 广播全局 frame 到传感器 frame 的 TF
 _sensor_frame_id:=          广播 TF 时的 child frame，例如 livox_frame
@@ -346,7 +355,7 @@ _robot_path_length:=1000   visual marker 中保留的 odom 轨迹点数
 _map_size_m:=12.0           独立地图边长，默认与 audio map 一致
 _resolution:=0.05           独立地图分辨率，默认与 audio map 一致
 _map_center_x/_map_center_y 固定全局地图中心，默认均为 0.0
-_use_audio_map_geometry:=false 是否订阅并复制 audio map 几何
+_use_audio_map_geometry:=true 是否订阅并复制 audio map 几何；默认 true，保证 visual/audio map 坐标一致
 ```
 
 支持直接解码的 raw 图像编码：
