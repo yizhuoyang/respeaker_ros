@@ -7,6 +7,7 @@ from collections import deque
 from pathlib import Path
 from queue import Empty, Full, Queue
 import threading
+import time
 
 import cv2
 import numpy as np
@@ -266,6 +267,21 @@ class YOLOEVisualMapNode:
         self.occupied_value = float(
             np.clip(rospy.get_param("~occupied_value", 1.0), 0.0, 1.0)
         )
+        self.map_update_mode = str(
+            rospy.get_param("~map_update_mode", "tracks")
+        ).strip().lower()
+        if self.map_update_mode not in ("tracks", "raw_points"):
+            raise ValueError("~map_update_mode must be 'tracks' or 'raw_points'.")
+        self.track_merge_distance_m = max(
+            float(rospy.get_param("~track_merge_distance_m", 0.60)), 0.0
+        )
+        self.track_smoothing_alpha = float(
+            np.clip(rospy.get_param("~track_smoothing_alpha", 0.35), 0.0, 1.0)
+        )
+        self.track_max_age_sec = max(float(rospy.get_param("~track_max_age_sec", 0.0)), 0.0)
+        self.track_marker_radius_m = max(
+            float(rospy.get_param("~track_marker_radius_m", 0.18)), self.resolution
+        )
         self.publish_marker_threshold = float(
             np.clip(rospy.get_param("~marker_threshold", 0.10), 0.0, 1.0)
         )
@@ -296,6 +312,8 @@ class YOLOEVisualMapNode:
         self.geometry = None
         self.geometry_from_audio_map = False
         self.visual_map = None
+        self.visual_tracks = []
+        self.next_track_id = 1
         self.latest_odom = None
         self.latest_camera_info = None
         self.model = None
@@ -506,6 +524,8 @@ class YOLOEVisualMapNode:
             self.geometry_from_audio_map = True
             if changed or self.visual_map is None:
                 self.visual_map = np.zeros((geometry.height, geometry.width), dtype=np.float32)
+                self.visual_tracks = []
+                self.next_track_id = 1
                 initialized = True
                 self.rospy.loginfo(
                     "Visual map adopted audio map geometry: frame=%s size=%dx%d resolution=%.3f",
@@ -548,6 +568,8 @@ class YOLOEVisualMapNode:
             if self.geometry is None:
                 self.geometry = geometry
                 self.visual_map = np.zeros((height, width), dtype=np.float32)
+                self.visual_tracks = []
+                self.next_track_id = 1
                 initialized = True
                 self.rospy.loginfo(
                     "Visual map initialized independently: frame=%s center=(%.3f, %.3f) "
@@ -572,6 +594,8 @@ class YOLOEVisualMapNode:
                 self.visual_map = np.zeros(
                     (self.geometry.height, self.geometry.width), dtype=np.float32
                 )
+            self.visual_tracks = []
+            self.next_track_id = 1
             self.latest_detection_count = 0
             self.latest_raw_detection_count = 0
             self.latest_depth_rejected_count = 0
@@ -1040,36 +1064,22 @@ class YOLOEVisualMapNode:
         updated_count = 0
         out_of_map_count = 0
         with self.lock:
-            occupied = self.visual_map.copy()
-            inflation_cells = int(math.ceil(self.footprint_inflation_m / geometry.resolution))
-            for detection in detections:
-                rows, columns = geometry.points_to_cells(detection["points_xy"])
-                if not rows.size:
-                    out_of_map_count += 1
-                    continue
-                updated_count += 1
-                if inflation_cells <= 0:
-                    occupied[rows, columns] = self.occupied_value
-                else:
-                    for row_offset in range(-inflation_cells, inflation_cells + 1):
-                        for column_offset in range(-inflation_cells, inflation_cells + 1):
-                            if (
-                                row_offset * row_offset + column_offset * column_offset
-                                > inflation_cells * inflation_cells
-                            ):
-                                continue
-                            expanded_rows = rows + row_offset
-                            expanded_columns = columns + column_offset
-                            valid = (
-                                (expanded_rows >= 0)
-                                & (expanded_rows < geometry.height)
-                                & (expanded_columns >= 0)
-                                & (expanded_columns < geometry.width)
-                            )
-                            occupied[expanded_rows[valid], expanded_columns[valid]] = (
-                                self.occupied_value
-                            )
-            self.visual_map = np.clip(occupied, 0.0, 1.0)
+            if self.map_update_mode == "tracks":
+                updated_count, out_of_map_count = self.update_tracks_locked(
+                    detections, geometry, stamp
+                )
+                self.visual_map = self.build_track_map_locked(geometry, stamp)
+            else:
+                occupied = self.visual_map.copy()
+                inflation_cells = int(math.ceil(self.footprint_inflation_m / geometry.resolution))
+                for detection in detections:
+                    rows, columns = geometry.points_to_cells(detection["points_xy"])
+                    if not rows.size:
+                        out_of_map_count += 1
+                        continue
+                    updated_count += 1
+                    self.paint_cells(occupied, rows, columns, geometry, inflation_cells)
+                self.visual_map = np.clip(occupied, 0.0, 1.0)
             map_copy = self.visual_map.copy()
         if out_of_map_count:
             self.rospy.logwarn_throttle(
@@ -1082,6 +1092,101 @@ class YOLOEVisualMapNode:
         self.marker_pub.publish(self.make_markers(map_copy, detections, geometry, stamp))
         self.publish_detection_json(detections, geometry, stamp)
         return updated_count, out_of_map_count
+
+    def update_tracks_locked(self, detections, geometry, stamp):
+        now_sec = stamp.to_sec() if stamp.to_sec() > 0.0 else time.time()
+        if self.track_max_age_sec > 0.0:
+            self.visual_tracks = [
+                track
+                for track in self.visual_tracks
+                if now_sec - track["last_seen"] <= self.track_max_age_sec
+            ]
+
+        updated_count = 0
+        out_of_map_count = 0
+        for detection in detections:
+            center_xy = np.asarray(detection["center"][:2], dtype=np.float32)
+            rows, columns = geometry.points_to_cells(center_xy[None, :])
+            if not rows.size:
+                out_of_map_count += 1
+                continue
+
+            best_track = None
+            best_distance = None
+            for track in self.visual_tracks:
+                if track["label"] != detection["label"]:
+                    continue
+                distance = float(np.linalg.norm(center_xy - track["center"]))
+                if distance <= self.track_merge_distance_m and (
+                    best_distance is None or distance < best_distance
+                ):
+                    best_track = track
+                    best_distance = distance
+
+            if best_track is None:
+                best_track = {
+                    "id": self.next_track_id,
+                    "label": detection["label"],
+                    "class_id": detection["class_id"],
+                    "confidence": detection["confidence"],
+                    "center": center_xy.copy(),
+                    "count": 0,
+                    "last_seen": now_sec,
+                }
+                self.next_track_id += 1
+                self.visual_tracks.append(best_track)
+            else:
+                alpha = self.track_smoothing_alpha
+                best_track["center"] = (
+                    (1.0 - alpha) * best_track["center"] + alpha * center_xy
+                ).astype(np.float32)
+                best_track["confidence"] = max(
+                    float(best_track["confidence"]), float(detection["confidence"])
+                )
+                best_track["last_seen"] = now_sec
+
+            best_track["count"] += 1
+            detection["track_id"] = best_track["id"]
+            detection["center"] = np.asarray(
+                [best_track["center"][0], best_track["center"][1], detection["center"][2]],
+                dtype=np.float32,
+            )
+            detection["points_xy"] = best_track["center"][None, :]
+            updated_count += 1
+        return updated_count, out_of_map_count
+
+    def build_track_map_locked(self, geometry, stamp):
+        occupied = np.zeros((geometry.height, geometry.width), dtype=np.float32)
+        now_sec = stamp.to_sec() if stamp.to_sec() > 0.0 else time.time()
+        inflation_cells = int(math.ceil(self.track_marker_radius_m / geometry.resolution))
+        for track in self.visual_tracks:
+            if self.track_max_age_sec > 0.0 and now_sec - track["last_seen"] > self.track_max_age_sec:
+                continue
+            rows, columns = geometry.points_to_cells(track["center"][None, :])
+            if rows.size:
+                self.paint_cells(occupied, rows, columns, geometry, inflation_cells)
+        return np.clip(occupied, 0.0, 1.0)
+
+    def paint_cells(self, occupied, rows, columns, geometry, inflation_cells):
+        if inflation_cells <= 0:
+            occupied[rows, columns] = self.occupied_value
+            return
+        for row_offset in range(-inflation_cells, inflation_cells + 1):
+            for column_offset in range(-inflation_cells, inflation_cells + 1):
+                if (
+                    row_offset * row_offset + column_offset * column_offset
+                    > inflation_cells * inflation_cells
+                ):
+                    continue
+                expanded_rows = rows + row_offset
+                expanded_columns = columns + column_offset
+                valid = (
+                    (expanded_rows >= 0)
+                    & (expanded_rows < geometry.height)
+                    & (expanded_columns >= 0)
+                    & (expanded_columns < geometry.width)
+                )
+                occupied[expanded_rows[valid], expanded_columns[valid]] = self.occupied_value
 
     def publish_map_snapshot(self, geometry, stamp):
         """Publish an initialized visual map before TF-dependent observations arrive."""
@@ -1114,8 +1219,12 @@ class YOLOEVisualMapNode:
         with self.lock:
             odom = self.latest_odom
             robot_path = list(self.robot_path)
+            visual_tracks = [dict(track) for track in self.visual_tracks]
             previous_object_marker_count = self.last_object_marker_count
-            self.last_object_marker_count = len(detections)
+            object_count = (
+                len(visual_tracks) if self.map_update_mode == "tracks" else len(detections)
+            )
+            self.last_object_marker_count = object_count
 
         heatmap = Marker()
         heatmap.header.frame_id = geometry.frame_id
@@ -1189,7 +1298,22 @@ class YOLOEVisualMapNode:
                 trajectory.points = path_points
                 markers.append(trajectory)
 
-        for index, detection in enumerate(detections):
+        marker_objects = (
+            [
+                {
+                    "class_id": track["class_id"],
+                    "label": track["label"],
+                    "confidence": track["confidence"],
+                    "center": np.asarray([track["center"][0], track["center"][1], 0.0]),
+                    "count": track["count"],
+                    "track_id": track["id"],
+                }
+                for track in visual_tracks
+            ]
+            if self.map_update_mode == "tracks"
+            else detections
+        )
+        for index, detection in enumerate(marker_objects):
             red, green, blue = color_for_class(detection["class_id"])
             center = detection["center"]
             object_marker = Marker()
@@ -1218,14 +1342,20 @@ class YOLOEVisualMapNode:
             label.pose.orientation.w = 1.0
             label.scale.z = 0.18
             label.color = ColorRGBA(r=red, g=green, b=blue, a=1.0)
-            label.text = "%s %.2f\n(%.2f, %.2f)" % (
+            count_text = (
+                " id=%s n=%s" % (detection.get("track_id"), detection.get("count"))
+                if self.map_update_mode == "tracks"
+                else ""
+            )
+            label.text = "%s %.2f%s\n(%.2f, %.2f)" % (
                 detection["label"],
                 detection["confidence"],
+                count_text,
                 center[0],
                 center[1],
             )
             markers.append(label)
-        for index in range(len(detections), previous_object_marker_count):
+        for index in range(object_count, previous_object_marker_count):
             for marker_id in (2 * index, 2 * index + 1):
                 deletion = Marker()
                 deletion.header = heatmap.header
@@ -1264,6 +1394,7 @@ class YOLOEVisualMapNode:
                     "label": detection["label"],
                     "class_id": detection["class_id"],
                     "confidence": detection["confidence"],
+                    "track_id": detection.get("track_id"),
                     "x": float(detection["center"][0]),
                     "y": float(detection["center"][1]),
                     "z": float(detection["center"][2]),
@@ -1282,6 +1413,7 @@ class YOLOEVisualMapNode:
             has_camera_info = self.latest_camera_info is not None
             has_odom = self.latest_odom is not None
             geometry_from_audio_map = self.geometry_from_audio_map
+            visual_track_count = len(self.visual_tracks)
             occupied_cell_count = (
                 int(np.count_nonzero(self.visual_map >= self.publish_marker_threshold))
                 if self.visual_map is not None
@@ -1301,6 +1433,11 @@ class YOLOEVisualMapNode:
             "sensor_frame_id": self.sensor_frame_id,
             "project_mask_footprint": self.project_mask_footprint,
             "footprint_inflation_m": self.footprint_inflation_m,
+            "map_update_mode": self.map_update_mode,
+            "track_merge_distance_m": self.track_merge_distance_m,
+            "track_smoothing_alpha": self.track_smoothing_alpha,
+            "track_marker_radius_m": self.track_marker_radius_m,
+            "visual_track_count": visual_track_count,
             "image_pairing_mode": self.image_pairing_mode,
             "rgb_messages_received": int(self.rgb_messages_received),
             "depth_messages_received": int(self.depth_messages_received),
