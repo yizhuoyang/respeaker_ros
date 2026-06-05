@@ -46,6 +46,15 @@ def cell_center(msg, row, column):
     )
 
 
+def audio_heatmap_cell_point(msg, row, column):
+    """Draw like audio_map_heatmap: use the audio map grid-point coordinates."""
+    resolution = float(msg.info.resolution)
+    return (
+        float(msg.info.origin.position.x) + (float(column) + 0.5) * resolution,
+        float(msg.info.origin.position.y) + (float(row) + 0.5) * resolution,
+    )
+
+
 def geometry_summary(msg):
     return {
         "frame_id": msg.header.frame_id,
@@ -157,10 +166,12 @@ class AudioVisualGoalFusionNode:
         self.visual_weight = float(rospy.get_param("~visual_weight", 1.0))
         self.weight_epsilon = float(rospy.get_param("~weight_epsilon", 1e-9))
         self.global_frame_id = str(rospy.get_param("~global_frame_id", "camera_init")).strip()
-        self.fusion_mode = str(rospy.get_param("~fusion_mode", "world_overlay")).strip().lower()
-        if self.fusion_mode not in ("world_overlay", "grid_resample"):
-            raise ValueError("~fusion_mode must be 'world_overlay' or 'grid_resample'.")
-        self.normalize_inputs = bool(rospy.get_param("~normalize_inputs", True))
+        self.fusion_mode = str(rospy.get_param("~fusion_mode", "global_grid_sum")).strip().lower()
+        if self.fusion_mode not in ("global_grid_sum", "world_overlay", "grid_resample"):
+            raise ValueError(
+                "~fusion_mode must be 'global_grid_sum', 'world_overlay', or 'grid_resample'."
+            )
+        self.normalize_inputs = bool(rospy.get_param("~normalize_inputs", False))
         self.allow_resample = bool(rospy.get_param("~allow_resample", True))
         self.reference_map = str(rospy.get_param("~reference_map", "audio")).strip().lower()
         if self.reference_map not in ("audio", "visual"):
@@ -271,10 +282,26 @@ class AudioVisualGoalFusionNode:
             )
             return
 
-        if self.fusion_mode == "world_overlay":
-            self.publish_world_overlay_goal(audio_msg, visual_msg)
+        if self.fusion_mode in ("global_grid_sum", "world_overlay", "grid_resample"):
+            self.publish_global_grid_sum_goal(audio_msg, visual_msg)
             return
 
+    def accept_global_frame(self, msg, source_name):
+        if not self.global_frame_id:
+            return True
+        if msg.header.frame_id == self.global_frame_id:
+            return True
+        self.last_status = "%s_frame_mismatch" % source_name
+        self.rospy.logwarn_throttle(
+            5.0,
+            "Ignoring %s map in frame '%s'; expected global odom frame '%s'.",
+            source_name,
+            msg.header.frame_id,
+            self.global_frame_id,
+        )
+        return False
+
+    def publish_global_grid_sum_goal(self, audio_msg, visual_msg):
         geometry_matches = same_geometry(audio_msg, visual_msg)
         if not geometry_matches and not self.allow_resample:
             self.last_status = "map_geometry_mismatch"
@@ -296,22 +323,28 @@ class AudioVisualGoalFusionNode:
             )
             return
 
+        reference_msg = audio_msg
+        if self.reference_map != "audio":
+            self.rospy.logwarn_throttle(
+                5.0,
+                "For RViz consistency, fused heatmap uses audio_map_heatmap geometry. "
+                "Ignoring ~reference_map=%s for two-map fusion.",
+                self.reference_map,
+            )
+
         audio = grid_to_array(audio_msg)
         visual = grid_to_array(visual_msg)
-        reference_msg = audio_msg if self.reference_map == "audio" else visual_msg
         resampled = False
+
         if not geometry_matches:
-            if self.reference_map == "audio":
-                visual = resample_to_reference(visual_msg, visual, audio_msg)
-            else:
-                audio = resample_to_reference(audio_msg, audio, visual_msg)
+            visual = resample_to_reference(visual_msg, visual, reference_msg)
             resampled = True
             self.rospy.logwarn_throttle(
                 5.0,
-                "Map geometry differs; resampling %s map onto %s grid before fusion.",
-                "visual" if self.reference_map == "audio" else "audio",
-                self.reference_map,
+                "Map geometry differs; adding maps on the audio heatmap grid in frame %s.",
+                reference_msg.header.frame_id,
             )
+
         if self.normalize_inputs:
             audio_used, audio_max = normalize_map(audio)
             visual_used, visual_max = normalize_map(visual)
@@ -348,23 +381,10 @@ class AudioVisualGoalFusionNode:
             audio_max,
             visual_max,
             resampled,
+            fusion_mode="global_grid_sum",
+            marker_reference_msg=audio_msg,
         )
         self.last_status = "running"
-
-    def accept_global_frame(self, msg, source_name):
-        if not self.global_frame_id:
-            return True
-        if msg.header.frame_id == self.global_frame_id:
-            return True
-        self.last_status = "%s_frame_mismatch" % source_name
-        self.rospy.logwarn_throttle(
-            5.0,
-            "Ignoring %s map in frame '%s'; expected global odom frame '%s'.",
-            source_name,
-            msg.header.frame_id,
-            self.global_frame_id,
-        )
-        return False
 
     def publish_world_overlay_goal(self, audio_msg, visual_msg):
         audio = grid_to_array(audio_msg)
@@ -524,6 +544,7 @@ class AudioVisualGoalFusionNode:
         resampled,
         preserve_grid_data=None,
         fusion_mode="weighted_sum",
+        marker_reference_msg=None,
     ):
         from geometry_msgs.msg import Point, PointStamped
         from nav_msgs.msg import OccupancyGrid
@@ -540,6 +561,10 @@ class AudioVisualGoalFusionNode:
         grid.header.frame_id = frame_id
         grid.header.stamp = stamp
         grid.info = copy_grid_info(reference_msg.info)
+        grid.info.origin.orientation.x = 0.0
+        grid.info.origin.orientation.y = 0.0
+        grid.info.origin.orientation.z = 0.0
+        grid.info.origin.orientation.w = 1.0
         if preserve_grid_data is None:
             grid.data = np.rint(100.0 * fused_for_grid).astype(np.int8).reshape(-1).tolist()
         else:
@@ -554,8 +579,9 @@ class AudioVisualGoalFusionNode:
         goal.point.z = self.goal_z
         self.goal_pub.publish(goal)
 
+        marker_header = (marker_reference_msg or reference_msg).header
         marker = Marker()
-        marker.header = goal.header
+        marker.header = marker_header
         marker.ns = "audio_visual_goal"
         marker.id = 0
         marker.type = Marker.SPHERE
@@ -569,7 +595,7 @@ class AudioVisualGoalFusionNode:
         marker.color.a = 0.95
         self.marker_pub.publish(marker)
         self.markers_pub.publish(
-            self.make_markers(fused_for_grid, reference_msg, goal.header, marker)
+            self.make_markers(fused, marker_reference_msg or reference_msg, marker)
         )
 
         payload = {
@@ -594,29 +620,37 @@ class AudioVisualGoalFusionNode:
         self.goal_json_pub.publish(String(data=json.dumps(payload, ensure_ascii=True)))
         self.set_fusion_mode(fusion_mode)
 
-    def make_markers(self, fused_for_grid, reference_msg, header, goal_marker):
+    def make_markers(self, fused, heatmap_reference_msg, goal_marker):
         from geometry_msgs.msg import Point
         from std_msgs.msg import ColorRGBA
         from visualization_msgs.msg import Marker, MarkerArray
 
         markers = []
         if self.publish_heatmap_marker:
+            probability = np.clip(np.asarray(fused, dtype=np.float32), 0.0, None)
+            maximum = float(probability.max()) if probability.size else 0.0
+            if maximum > 0.0:
+                normalized = probability / maximum
+            else:
+                normalized = np.zeros_like(probability, dtype=np.float32)
+
             heatmap = Marker()
-            heatmap.header = header
+            heatmap.header = heatmap_reference_msg.header
             heatmap.ns = "audio_visual_fused_heatmap"
             heatmap.id = 0
             heatmap.type = Marker.CUBE_LIST
             heatmap.action = Marker.ADD
             heatmap.pose.orientation.w = 1.0
-            heatmap.scale.x = float(reference_msg.info.resolution)
-            heatmap.scale.y = float(reference_msg.info.resolution)
-            heatmap.scale.z = max(float(reference_msg.info.resolution) * 0.10, 0.01)
+            heatmap.scale.x = float(heatmap_reference_msg.info.resolution)
+            heatmap.scale.y = float(heatmap_reference_msg.info.resolution)
+            heatmap.scale.z = max(float(heatmap_reference_msg.info.resolution) * 0.10, 0.01)
+            heatmap.color.a = 1.0
 
             selected = np.flatnonzero(
-                fused_for_grid.reshape(-1) >= self.heatmap_marker_threshold
+                normalized.reshape(-1) >= self.heatmap_marker_threshold
             )
             if selected.size > self.heatmap_marker_max_cells:
-                values = fused_for_grid.reshape(-1)[selected]
+                values = normalized.reshape(-1)[selected]
                 top = np.argpartition(values, -self.heatmap_marker_max_cells)[
                     -self.heatmap_marker_max_cells:
                 ]
@@ -624,15 +658,15 @@ class AudioVisualGoalFusionNode:
 
             if selected.size:
                 for flat_index in selected.tolist():
-                    row, column = np.unravel_index(flat_index, fused_for_grid.shape)
-                    value = float(fused_for_grid[row, column])
-                    x, y = cell_center(reference_msg, row, column)
+                    row, column = np.unravel_index(flat_index, normalized.shape)
+                    value = float(normalized[row, column])
+                    x, y = audio_heatmap_cell_point(heatmap_reference_msg, row, column)
                     heatmap.points.append(Point(float(x), float(y), self.heatmap_marker_height))
                     heatmap.colors.append(
                         ColorRGBA(
-                            r=1.0,
-                            g=min(1.0, 0.25 + 0.75 * value),
-                            b=0.05,
+                            r=0.15 + 0.25 * value,
+                            g=0.20 + 0.35 * value,
+                            b=0.95,
                             a=0.15 + 0.70 * value,
                         )
                     )
@@ -641,7 +675,7 @@ class AudioVisualGoalFusionNode:
             markers.append(heatmap)
 
         goal_copy = Marker()
-        goal_copy.header = goal_marker.header
+        goal_copy.header = heatmap_reference_msg.header
         goal_copy.ns = "audio_visual_goal"
         goal_copy.id = 1
         goal_copy.type = goal_marker.type
@@ -650,6 +684,26 @@ class AudioVisualGoalFusionNode:
         goal_copy.scale = goal_marker.scale
         goal_copy.color = goal_marker.color
         markers.append(goal_copy)
+
+        label = Marker()
+        label.header = heatmap_reference_msg.header
+        label.ns = "audio_visual_goal"
+        label.id = 2
+        label.type = Marker.TEXT_VIEW_FACING
+        label.action = Marker.ADD
+        label.pose.position = Point(
+            float(goal_marker.pose.position.x),
+            float(goal_marker.pose.position.y),
+            float(goal_marker.pose.position.z) + 0.35,
+        )
+        label.pose.orientation.w = 1.0
+        label.scale.z = 0.20
+        label.color = ColorRGBA(r=1.0, g=1.0, b=1.0, a=1.0)
+        label.text = "fusion goal\n(%.2f, %.2f)" % (
+            goal_marker.pose.position.x,
+            goal_marker.pose.position.y,
+        )
+        markers.append(label)
         return MarkerArray(markers=markers)
 
     def update_status(self, goal, audio_max, visual_max, fused_max):
