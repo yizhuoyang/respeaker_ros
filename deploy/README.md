@@ -739,7 +739,7 @@ python deploy/ros1_sslnet_audio_map_fusion.py \
   _map_size_m:=12.0 \
   _resolution:=0.05 \
   _beta_r:=0.05 \
-  _sigma_Q_cells:=1.0 \
+  _sigma_Q_cells:=1.5 \
   _min_confidence:=0.05 \
   _max_audio_input_mean_abs:=0.6
 ```
@@ -749,7 +749,7 @@ python deploy/ros1_sslnet_audio_map_fusion.py \
   的默认值一致，两张地图不需要互相订阅也能严格逐格叠加。
 - `_beta_r`：distance 分布在融合中的影响，默认 `0.05`；越大越依赖距离预测，设为 `0`
   则只使用 DOA。
-- `_sigma_Q_cells`：每次更新前对历史 map 做空间扩散，默认 `1.0`。它不是严格的
+- `_sigma_Q_cells`：每次更新前对历史 map 做空间扩散，默认 `1.5`。它不是严格的
   temporal decay，但能避免历史峰值过尖导致后续帧很难更新。
 - `_min_confidence`：DOA 峰值置信度低于该阈值时跳过当前更新。`doa_confidence`
   来自 softmax 后 DOA 分布的最大概率，范围为 `0~1`。

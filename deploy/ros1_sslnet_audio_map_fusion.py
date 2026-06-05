@@ -80,7 +80,7 @@ class SSLNetAudioMapFusionNode:
             map_size_m=float(rospy.get_param("~map_size_m", 12.0)),
             res=resolution,
             node_res=float(rospy.get_param("~argmax_resolution", resolution)),
-            sigma_Q_cells=float(rospy.get_param("~sigma_Q_cells", 1.0)),
+            sigma_Q_cells=float(rospy.get_param("~sigma_Q_cells", 1.5)),
             beta_r=float(rospy.get_param("~beta_r", 0.1)),
             use_entropy_weight=bool(rospy.get_param("~use_entropy_weight", True)),
             w_min=float(rospy.get_param("~w_min", 0.2)),
