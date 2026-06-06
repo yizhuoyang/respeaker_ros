@@ -63,7 +63,9 @@ start_node sslnet_audio_engine \
 start_node livox_to_pointcloud2 \
   python deploy/ros1_livox_custom_to_pointcloud2.py \
     _z_max:=1.9 \
-    _point_stride:=4
+    _point_stride:=4 \
+    _stamp_mode:=current \
+    _max_message_age_sec:=0.20
 
 start_node sslnet_rviz_markers \
   python deploy/ros1_sslnet_rviz_markers.py \

@@ -111,6 +111,10 @@ class LivoxCustomToPointCloud2:
         output_topic = rospy.get_param("~output_topic", "/livox/points_rviz")
         self.frame_id_override = rospy.get_param("~frame_id", "")
         self.point_stride = max(int(rospy.get_param("~point_stride", 1)), 1)
+        self.stamp_mode = str(rospy.get_param("~stamp_mode", "source")).strip().lower()
+        if self.stamp_mode not in ("source", "current", "zero"):
+            raise ValueError("~stamp_mode must be 'source', 'current', or 'zero'.")
+        self.max_message_age_sec = float(rospy.get_param("~max_message_age_sec", 0.0))
         self.bounds = {
             "x_min": optional_float_param(rospy, "~x_min"),
             "x_max": optional_float_param(rospy, "~x_max"),
@@ -121,21 +125,50 @@ class LivoxCustomToPointCloud2:
             "range_min_m": optional_float_param(rospy, "~range_min_m"),
             "range_max_m": optional_float_param(rospy, "~range_max_m"),
         }
-        self.publisher = rospy.Publisher(output_topic, PointCloud2, queue_size=2)
-        self.subscriber = rospy.Subscriber(input_topic, CustomMsg, self.callback, queue_size=2)
+        self.publisher = rospy.Publisher(output_topic, PointCloud2, queue_size=1)
+        self.subscriber = rospy.Subscriber(
+            input_topic, CustomMsg, self.callback, queue_size=1, tcp_nodelay=True
+        )
         rospy.loginfo(
-            "Livox CustomMsg -> PointCloud2: input=%s output=%s point_stride=%s filters=%s",
+            "Livox CustomMsg -> PointCloud2: input=%s output=%s point_stride=%s "
+            "stamp_mode=%s max_message_age_sec=%.3f filters=%s",
             input_topic,
             output_topic,
             self.point_stride,
+            self.stamp_mode,
+            self.max_message_age_sec,
             {key: value for key, value in self.bounds.items() if value is not None} or "none",
         )
 
     def callback(self, msg):
         from sensor_msgs import point_cloud2
         from sensor_msgs.msg import PointField
+        from std_msgs.msg import Header
 
-        header = msg.header
+        now = self.rospy.Time.now()
+        source_stamp = msg.header.stamp
+        if (
+            self.max_message_age_sec > 0.0
+            and source_stamp.to_sec() > 0.0
+            and (now - source_stamp).to_sec() > self.max_message_age_sec
+        ):
+            self.rospy.logwarn_throttle(
+                2.0,
+                "Dropping stale Livox frame: age %.3fs > %.3fs",
+                (now - source_stamp).to_sec(),
+                self.max_message_age_sec,
+            )
+            return
+
+        header = Header()
+        header.seq = msg.header.seq
+        header.frame_id = msg.header.frame_id
+        if self.stamp_mode == "current":
+            header.stamp = now
+        elif self.stamp_mode == "zero":
+            header.stamp = self.rospy.Time(0)
+        else:
+            header.stamp = source_stamp
         if self.frame_id_override:
             header.frame_id = self.frame_id_override
         fields = [

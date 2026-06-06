@@ -95,6 +95,9 @@ class SSLNetAudioMapFusionNode:
         self.min_signal_prob = float(rospy.get_param("~min_signal_prob", 0.5))
         self.frame_id_override = rospy.get_param("~frame_id", "")
         self.marker_height = float(rospy.get_param("~marker_height", 0.12))
+        self.publish_robot_trajectory = bool(
+            rospy.get_param("~publish_robot_trajectory", True)
+        )
         self.map_alpha_threshold = float(rospy.get_param("~map_alpha_threshold", 0.0))
         self.publish_heatmap_marker = bool(rospy.get_param("~publish_heatmap_marker", True))
         self.heatmap_marker_threshold = float(
@@ -617,22 +620,24 @@ class SSLNetAudioMapFusionNode:
         robot.color.b = 1.0
         robot.color.a = 0.95
 
-        trajectory = Marker()
-        trajectory.header = source.header
-        trajectory.ns = "audio_map_robot"
-        trajectory.id = 1
-        trajectory.type = Marker.LINE_STRIP
-        trajectory.action = Marker.ADD
-        trajectory.pose.orientation.w = 1.0
-        trajectory.scale.x = 0.045
-        trajectory.color.r = 0.05
-        trajectory.color.g = 0.80
-        trajectory.color.b = 1.0
-        trajectory.color.a = 0.80
-        trajectory.points = [
-            Point(float(x), float(y), self.marker_height * 0.5) for x, y in robot_path
-        ]
-        markers = [source, text, robot, trajectory]
+        markers = [source, text, robot]
+        if self.publish_robot_trajectory:
+            trajectory = Marker()
+            trajectory.header = source.header
+            trajectory.ns = "audio_map_robot"
+            trajectory.id = 1
+            trajectory.type = Marker.LINE_STRIP
+            trajectory.action = Marker.ADD
+            trajectory.pose.orientation.w = 1.0
+            trajectory.scale.x = 0.045
+            trajectory.color.r = 0.05
+            trajectory.color.g = 0.80
+            trajectory.color.b = 1.0
+            trajectory.color.a = 0.80
+            trajectory.points = [
+                Point(float(x), float(y), self.marker_height * 0.5) for x, y in robot_path
+            ]
+            markers.append(trajectory)
         if self.publish_heatmap_marker:
             markers.insert(0, self.make_heatmap_marker(output, source.header))
         return MarkerArray(markers=markers)

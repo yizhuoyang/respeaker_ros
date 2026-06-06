@@ -107,6 +107,7 @@ start_node audio_visual_goal_fusion \
     _global_frame_id:=camera_init \
     _reference_map:=audio \
     _normalize_inputs:=false \
+    _goal_pose_topic:=/move_based_simple/goal_raw \
     _publish_map:=false \
     _publish_goal_hz:=5.0 \
     _heatmap_marker_threshold:=0.15 \
