@@ -143,7 +143,7 @@ def map_nonzero_world_points(msg, values):
 class AudioVisualGoalFusionNode:
     def __init__(self):
         import rospy
-        from geometry_msgs.msg import PointStamped
+        from geometry_msgs.msg import PointStamped, PoseStamped
         from nav_msgs.msg import OccupancyGrid
         from std_msgs.msg import String
         from visualization_msgs.msg import Marker, MarkerArray
@@ -183,6 +183,10 @@ class AudioVisualGoalFusionNode:
             raise ValueError("~output_stamp_mode must be 'source', 'current', or 'zero'.")
         self.min_fused_value = float(rospy.get_param("~min_fused_value", 0.0))
         self.goal_z = float(rospy.get_param("~goal_z", 0.0))
+        self.goal_pose_topic = rospy.get_param(
+            "~goal_pose_topic", "/move_based_simple/goal_raw"
+        )
+        self.goal_pose_yaw_rad = float(rospy.get_param("~goal_pose_yaw_rad", 0.0))
         self.marker_height = float(rospy.get_param("~marker_height", 0.18))
         self.overlay_resolution = float(rospy.get_param("~overlay_resolution", 0.05))
         self.publish_heatmap_marker = bool(rospy.get_param("~publish_heatmap_marker", True))
@@ -196,6 +200,9 @@ class AudioVisualGoalFusionNode:
 
         self.map_pub = rospy.Publisher("~map", OccupancyGrid, queue_size=1, latch=True)
         self.goal_pub = rospy.Publisher("~goal", PointStamped, queue_size=2, latch=True)
+        self.goal_pose_pub = rospy.Publisher(
+            self.goal_pose_topic, PoseStamped, queue_size=2, latch=True
+        )
         self.goal_json_pub = rospy.Publisher("~goal_json", String, queue_size=2, latch=True)
         self.marker_pub = rospy.Publisher("~marker", Marker, queue_size=1, latch=True)
         self.markers_pub = rospy.Publisher("~markers", MarkerArray, queue_size=1, latch=True)
@@ -223,9 +230,10 @@ class AudioVisualGoalFusionNode:
             self.output_stamp_mode,
         )
         rospy.loginfo(
-            "Audio-visual fusion outputs: map=%s goal=%s marker=%s markers=%s status=%s",
+            "Audio-visual fusion outputs: map=%s goal=%s goal_pose=%s marker=%s markers=%s status=%s",
             rospy.resolve_name("~map"),
             rospy.resolve_name("~goal"),
+            self.goal_pose_topic,
             rospy.resolve_name("~marker"),
             rospy.resolve_name("~markers"),
             rospy.resolve_name("~status"),
@@ -546,7 +554,7 @@ class AudioVisualGoalFusionNode:
         fusion_mode="weighted_sum",
         marker_reference_msg=None,
     ):
-        from geometry_msgs.msg import Point, PointStamped
+        from geometry_msgs.msg import Point, PointStamped, PoseStamped
         from nav_msgs.msg import OccupancyGrid
         from std_msgs.msg import String
         from visualization_msgs.msg import Marker, MarkerArray
@@ -578,6 +586,7 @@ class AudioVisualGoalFusionNode:
         goal.point.y = float(y)
         goal.point.z = self.goal_z
         self.goal_pub.publish(goal)
+        self.goal_pose_pub.publish(self.make_goal_pose(frame_id, stamp, x, y))
 
         marker_header = (marker_reference_msg or reference_msg).header
         marker = Marker()
@@ -619,6 +628,20 @@ class AudioVisualGoalFusionNode:
         }
         self.goal_json_pub.publish(String(data=json.dumps(payload, ensure_ascii=True)))
         self.set_fusion_mode(fusion_mode)
+
+    def make_goal_pose(self, frame_id, stamp, x, y):
+        from geometry_msgs.msg import PoseStamped
+
+        pose = PoseStamped()
+        pose.header.frame_id = frame_id
+        pose.header.stamp = stamp
+        pose.pose.position.x = float(x)
+        pose.pose.position.y = float(y)
+        pose.pose.position.z = self.goal_z
+        half_yaw = 0.5 * self.goal_pose_yaw_rad
+        pose.pose.orientation.z = float(np.sin(half_yaw))
+        pose.pose.orientation.w = float(np.cos(half_yaw))
+        return pose
 
     def make_markers(self, fused, heatmap_reference_msg, goal_marker):
         from geometry_msgs.msg import Point
