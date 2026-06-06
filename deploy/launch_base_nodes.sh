@@ -54,7 +54,7 @@ trap stop_all INT TERM EXIT
 
 start_node sslnet_audio_engine \
   python deploy/ros1_sslnet_audio_engine_node.py \
-    _engine:=weights/av_nav_sslnet_audio_final/last_model.engine \
+    _engine:=weights/ssl_doa_distance_synced/last_model.engine \
     _device:=cuda:0 \
     _window_seconds:=0.5 \
     _hop_seconds:=0.25 \

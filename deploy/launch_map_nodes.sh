@@ -56,7 +56,13 @@ start_node sslnet_audio_map_fusion \
   python deploy/ros1_sslnet_audio_map_fusion.py \
     _broadcast_odom_tf:=true \
     _sensor_frame_id:=livox_frame \
-    _min_signal_prob:=0.5
+    _map_size_m:=12.0 \
+    _resolution:=0.05 \
+    _min_confidence:=0.02 \
+    _max_audio_input_mean_abs:=0.6 \
+    _min_signal_prob:=0.5 \
+    _beta_r:=0.3 \
+    _sigma_Q_cells:=1.5
 
 
 
