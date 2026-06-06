@@ -64,7 +64,7 @@ start_node sslnet_audio_map_fusion \
     _beta_r:=0.3 \
     _sigma_Q_cells:=1.5 \
     _publish_map:=true \
-    _publish_map_hz:=1.0 \
+    _publish_map_hz:=5.0 \
     _heatmap_marker_threshold:=0.12 \
     _heatmap_marker_max_cells:=1500
 
@@ -89,9 +89,9 @@ start_node yoloe_visual_map \
     _track_marker_radius_m:=0.20 \
     _project_mask_footprint:=false \
     _publish_map:=true \
-    _publish_map_hz:=1.0 \
+    _publish_map_hz:=5.0 \
     _publish_annotated_image:=false \
-    _annotated_image_hz:=1.0 \
+    _annotated_image_hz:=5.0 \
     _marker_threshold:=0.20 \
     _marker_max_cells:=1000 \
     _publish_robot_trajectory:=false \
