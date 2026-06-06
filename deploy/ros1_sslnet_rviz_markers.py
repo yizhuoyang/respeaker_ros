@@ -4,6 +4,7 @@
 import json
 import math
 import threading
+import time
 
 import numpy as np
 
@@ -47,6 +48,8 @@ class SSLNetRvizMarkers:
         self.distance_ring_stride = max(int(rospy.get_param("~distance_ring_stride", 4)), 1)
         self.show_distributions = bool(rospy.get_param("~show_distributions", True))
         self.lifetime_sec = float(rospy.get_param("~lifetime_sec", 1.5))
+        self.publish_hz = float(rospy.get_param("~publish_hz", 0.0))
+        self._last_publish_time = 0.0
 
         prediction_topic = rospy.get_param(
             "~prediction_topic", "/sslnet_audio_inference/prediction_json"
@@ -96,6 +99,8 @@ class SSLNetRvizMarkers:
         self.publish_latest()
 
     def publish_latest(self):
+        if not self.should_publish():
+            return
         with self.lock:
             if self.latest_summary is None:
                 return
@@ -105,6 +110,15 @@ class SSLNetRvizMarkers:
         doa_deg = float(summary["doa_deg"])
         distance_m = float(summary["distance_m"])
         self.publish_markers(summary, doa_deg, distance_m, doa, distance)
+
+    def should_publish(self):
+        if self.publish_hz <= 0.0:
+            return True
+        now = time.monotonic()
+        if now - self._last_publish_time < 1.0 / self.publish_hz:
+            return False
+        self._last_publish_time = now
+        return True
 
     def new_marker(self, marker_id, namespace, marker_type, stamp):
         from visualization_msgs.msg import Marker

@@ -3,6 +3,7 @@
 
 import json
 import threading
+import time
 
 import numpy as np
 
@@ -193,6 +194,13 @@ class AudioVisualGoalFusionNode:
             int(rospy.get_param("~heatmap_marker_max_cells", 6000)), 1
         )
         self.heatmap_marker_height = float(rospy.get_param("~heatmap_marker_height", 0.03))
+        self.publish_map_enabled = bool(rospy.get_param("~publish_map", True))
+        self.publish_map_hz = float(rospy.get_param("~publish_map_hz", 0.0))
+        self.publish_marker_hz = float(rospy.get_param("~publish_marker_hz", 0.0))
+        self.publish_goal_hz = float(rospy.get_param("~publish_goal_hz", 0.0))
+        self._last_map_publish_time = 0.0
+        self._last_marker_publish_time = 0.0
+        self._last_goal_publish_time = 0.0
 
         self.map_pub = rospy.Publisher("~map", OccupancyGrid, queue_size=1, latch=True)
         self.goal_pub = rospy.Publisher("~goal", PointStamped, queue_size=2, latch=True)
@@ -569,7 +577,8 @@ class AudioVisualGoalFusionNode:
             grid.data = np.rint(100.0 * fused_for_grid).astype(np.int8).reshape(-1).tolist()
         else:
             grid.data = list(preserve_grid_data)
-        self.map_pub.publish(grid)
+        if self.publish_map_enabled and self.should_publish("map", self.publish_map_hz):
+            self.map_pub.publish(grid)
 
         goal = PointStamped()
         goal.header.frame_id = frame_id
@@ -577,7 +586,9 @@ class AudioVisualGoalFusionNode:
         goal.point.x = float(x)
         goal.point.y = float(y)
         goal.point.z = self.goal_z
-        self.goal_pub.publish(goal)
+        publish_goal = self.should_publish("goal", self.publish_goal_hz)
+        if publish_goal:
+            self.goal_pub.publish(goal)
 
         marker_header = (marker_reference_msg or reference_msg).header
         marker = Marker()
@@ -593,10 +604,11 @@ class AudioVisualGoalFusionNode:
         marker.color.g = 0.85
         marker.color.b = 0.05
         marker.color.a = 0.95
-        self.marker_pub.publish(marker)
-        self.markers_pub.publish(
-            self.make_markers(fused, marker_reference_msg or reference_msg, marker)
-        )
+        if self.should_publish("marker", self.publish_marker_hz):
+            self.marker_pub.publish(marker)
+            self.markers_pub.publish(
+                self.make_markers(fused, marker_reference_msg or reference_msg, marker)
+            )
 
         payload = {
             "frame_id": frame_id,
@@ -617,8 +629,20 @@ class AudioVisualGoalFusionNode:
             "visual_max": float(visual_max),
             "fused_max": float(maximum),
         }
-        self.goal_json_pub.publish(String(data=json.dumps(payload, ensure_ascii=True)))
+        if publish_goal:
+            self.goal_json_pub.publish(String(data=json.dumps(payload, ensure_ascii=True)))
         self.set_fusion_mode(fusion_mode)
+
+    def should_publish(self, stream_name, hz):
+        if hz <= 0.0:
+            return True
+        now = time.monotonic()
+        attr_name = "_last_%s_publish_time" % stream_name
+        last = getattr(self, attr_name)
+        if now - last < 1.0 / hz:
+            return False
+        setattr(self, attr_name, now)
+        return True
 
     def make_markers(self, fused, heatmap_reference_msg, goal_marker):
         from geometry_msgs.msg import Point

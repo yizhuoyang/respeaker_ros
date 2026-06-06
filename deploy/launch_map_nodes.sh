@@ -62,7 +62,11 @@ start_node sslnet_audio_map_fusion \
     _max_audio_input_mean_abs:=0.6 \
     _min_signal_prob:=0.5 \
     _beta_r:=0.3 \
-    _sigma_Q_cells:=1.5
+    _sigma_Q_cells:=1.5 \
+    _publish_map:=true \
+    _publish_map_hz:=1.0 \
+    _heatmap_marker_threshold:=0.12 \
+    _heatmap_marker_max_cells:=1500
 
 
 
@@ -84,6 +88,14 @@ start_node yoloe_visual_map \
     _track_smoothing_alpha:=0.25 \
     _track_marker_radius_m:=0.20 \
     _project_mask_footprint:=false \
+    _publish_map:=true \
+    _publish_map_hz:=1.0 \
+    _publish_annotated_image:=false \
+    _annotated_image_hz:=1.0 \
+    _marker_threshold:=0.20 \
+    _marker_max_cells:=1000 \
+    _publish_robot_trajectory:=false \
+    _robot_path_length:=300 \
     _device:=0
 
 start_node audio_visual_goal_fusion \
@@ -94,7 +106,11 @@ start_node audio_visual_goal_fusion \
     _visual_weight:=1.0 \
     _global_frame_id:=camera_init \
     _reference_map:=audio \
-    _normalize_inputs:=false
+    _normalize_inputs:=false \
+    _publish_map:=false \
+    _publish_goal_hz:=5.0 \
+    _heatmap_marker_threshold:=0.15 \
+    _heatmap_marker_max_cells:=1500
 
 echo
 echo "[map] map nodes started. Logs: ${LOG_DIR}"

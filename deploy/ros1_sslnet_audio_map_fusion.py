@@ -7,6 +7,7 @@ import math
 from pathlib import Path
 import sys
 import threading
+import time
 
 import numpy as np
 
@@ -103,6 +104,11 @@ class SSLNetAudioMapFusionNode:
             int(rospy.get_param("~heatmap_marker_max_cells", 6000)), 1
         )
         self.heatmap_marker_height = float(rospy.get_param("~heatmap_marker_height", 0.02))
+        self.publish_map_enabled = bool(rospy.get_param("~publish_map", True))
+        self.publish_map_hz = float(rospy.get_param("~publish_map_hz", 0.0))
+        self.publish_marker_hz = float(rospy.get_param("~publish_marker_hz", 0.0))
+        self._last_map_publish_time = 0.0
+        self._last_marker_publish_time = 0.0
         self.broadcast_odom_tf = bool(rospy.get_param("~broadcast_odom_tf", False))
         self.sensor_frame_id = rospy.get_param("~sensor_frame_id", "")
         self.warned_frame_override = False
@@ -418,11 +424,13 @@ class SSLNetAudioMapFusionNode:
         signal_prob=1.0,
         no_signal=False,
     ):
-        self.map_pub.publish(self.make_map(output, frame_id, stamp))
+        if self.publish_map_enabled and self.should_publish("map", self.publish_map_hz):
+            self.map_pub.publish(self.make_map(output, frame_id, stamp))
         self.argmax_pub.publish(self.make_argmax_point(output, frame_id, stamp))
-        self.markers_pub.publish(
-            self.make_markers(output, frame_id, stamp, robot_position, robot_yaw, confidence)
-        )
+        if self.should_publish("marker", self.publish_marker_hz):
+            self.markers_pub.publish(
+                self.make_markers(output, frame_id, stamp, robot_position, robot_yaw, confidence)
+            )
         estimate = output["map_argmax_world"]
         payload = {
             "x": float(estimate[0]),
@@ -452,6 +460,17 @@ class SSLNetAudioMapFusionNode:
             confidence,
             signal_prob,
         )
+
+    def should_publish(self, stream_name, hz):
+        if hz <= 0.0:
+            return True
+        now = time.monotonic()
+        attr_name = "_last_%s_publish_time" % stream_name
+        last = getattr(self, attr_name)
+        if now - last < 1.0 / hz:
+            return False
+        setattr(self, attr_name, now)
+        return True
 
     def make_map(self, output, frame_id, stamp):
         from nav_msgs.msg import OccupancyGrid

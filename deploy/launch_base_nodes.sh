@@ -62,11 +62,13 @@ start_node sslnet_audio_engine \
 
 start_node livox_to_pointcloud2 \
   python deploy/ros1_livox_custom_to_pointcloud2.py \
-    _z_max:=1.9
+    _z_max:=1.9 \
+    _point_stride:=4
 
 start_node sslnet_rviz_markers \
   python deploy/ros1_sslnet_rviz_markers.py \
-    _frame_id:=livox_frame
+    _frame_id:=livox_frame \
+    _show_distributions:=false
 
 echo
 echo "[base] persistent nodes started. Logs: ${LOG_DIR}"

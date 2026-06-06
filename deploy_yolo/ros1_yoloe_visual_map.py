@@ -290,8 +290,21 @@ class YOLOEVisualMapNode:
         self.marker_cell_size_m = max(
             float(rospy.get_param("~marker_cell_size_m", 0.15)), self.resolution
         )
+        self.publish_map_hz = float(rospy.get_param("~publish_map_hz", 0.0))
+        self.publish_map_enabled = bool(rospy.get_param("~publish_map", True))
+        self.publish_marker_hz = float(rospy.get_param("~publish_marker_hz", 0.0))
+        self.publish_annotated_image_enabled = bool(
+            rospy.get_param("~publish_annotated_image", True)
+        )
+        self.annotated_image_hz = float(rospy.get_param("~annotated_image_hz", 0.0))
+        self._last_map_publish_time = 0.0
+        self._last_marker_publish_time = 0.0
+        self._last_annotated_publish_time = 0.0
         self.object_marker_height = float(rospy.get_param("~object_marker_height", 0.18))
         self.robot_marker_height = float(rospy.get_param("~robot_marker_height", 0.10))
+        self.publish_robot_trajectory = bool(
+            rospy.get_param("~publish_robot_trajectory", True)
+        )
         self.robot_path = deque(
             maxlen=max(int(rospy.get_param("~robot_path_length", 1000)), 1)
         )
@@ -403,13 +416,19 @@ class YOLOEVisualMapNode:
         )
         rospy.loginfo(
             "YOLOE effective settings: conf=%.3f param=%s broadcast_odom_tf=%s "
-            "sensor_frame_id=%s project_mask_footprint=%s footprint_inflation_m=%.3f",
+            "sensor_frame_id=%s project_mask_footprint=%s footprint_inflation_m=%.3f "
+            "publish_map=%s publish_map_hz=%.2f publish_marker_hz=%.2f annotated=%s annotated_hz=%.2f",
             self.confidence_threshold,
             rospy.resolve_name("~conf"),
             self.broadcast_odom_tf,
             self.sensor_frame_id or "<odom child/default>",
             self.project_mask_footprint,
             self.footprint_inflation_m,
+            self.publish_map_enabled,
+            self.publish_map_hz,
+            self.publish_marker_hz,
+            self.publish_annotated_image_enabled,
+            self.annotated_image_hz,
         )
         if self.projection_pose_source == "odom":
             rospy.logwarn(
@@ -1097,8 +1116,10 @@ class YOLOEVisualMapNode:
                 "Increase ~map_size_m or change ~map_center_x/~map_center_y.",
                 out_of_map_count,
             )
-        self.map_pub.publish(self.make_grid(map_copy, geometry, stamp))
-        self.marker_pub.publish(self.make_markers(map_copy, detections, geometry, stamp))
+        if self.publish_map_enabled and self.should_publish("map", self.publish_map_hz):
+            self.map_pub.publish(self.make_grid(map_copy, geometry, stamp))
+        if self.should_publish("marker", self.publish_marker_hz):
+            self.marker_pub.publish(self.make_markers(map_copy, detections, geometry, stamp))
         self.publish_detection_json(detections, geometry, stamp)
         return updated_count, out_of_map_count
 
@@ -1201,8 +1222,10 @@ class YOLOEVisualMapNode:
         """Publish an initialized visual map before TF-dependent observations arrive."""
         with self.lock:
             map_copy = self.visual_map.copy()
-        self.map_pub.publish(self.make_grid(map_copy, geometry, stamp))
-        self.marker_pub.publish(self.make_markers(map_copy, [], geometry, stamp))
+        if self.publish_map_enabled and self.should_publish("map", self.publish_map_hz):
+            self.map_pub.publish(self.make_grid(map_copy, geometry, stamp))
+        if self.should_publish("marker", self.publish_marker_hz):
+            self.marker_pub.publish(self.make_markers(map_copy, [], geometry, stamp))
         self.publish_detection_json([], geometry, stamp)
 
     def make_grid(self, probability, geometry, stamp):
@@ -1294,7 +1317,7 @@ class YOLOEVisualMapNode:
                 for x, y, frame_id in robot_path
                 if not frame_id or frame_id == geometry.frame_id
             ]
-            if len(path_points) >= 2:
+            if self.publish_robot_trajectory and len(path_points) >= 2:
                 trajectory = Marker()
                 trajectory.header = heatmap.header
                 trajectory.ns = "visual_map_robot"
@@ -1375,6 +1398,10 @@ class YOLOEVisualMapNode:
         return MarkerArray(markers=markers)
 
     def publish_annotated_image(self, result, header):
+        if not self.publish_annotated_image_enabled:
+            return
+        if not self.should_publish("annotated", self.annotated_image_hz):
+            return
         try:
             from sensor_msgs.msg import Image
 
@@ -1390,6 +1417,17 @@ class YOLOEVisualMapNode:
             self.annotated_pub.publish(message)
         except Exception as exc:
             self.rospy.logwarn_throttle(5.0, "Cannot publish YOLOE annotated image: %s", exc)
+
+    def should_publish(self, stream_name, hz):
+        if hz <= 0.0:
+            return True
+        now = time.monotonic()
+        attr_name = "_last_%s_publish_time" % stream_name
+        last = getattr(self, attr_name)
+        if now - last < 1.0 / hz:
+            return False
+        setattr(self, attr_name, now)
+        return True
 
     def publish_detection_json(self, detections, geometry, stamp):
         from std_msgs.msg import String
