@@ -187,6 +187,10 @@ class AudioVisualGoalFusionNode:
             "~goal_pose_topic", "/move_based_simple/goal_raw"
         )
         self.goal_pose_yaw_rad = float(rospy.get_param("~goal_pose_yaw_rad", 0.0))
+        self.goal_pose_publish_period_sec = float(
+            rospy.get_param("~goal_pose_publish_period_sec", 5.0)
+        )
+        self._last_goal_pose_publish_time = self.rospy.Time.now()
         self.marker_height = float(rospy.get_param("~marker_height", 0.18))
         self.overlay_resolution = float(rospy.get_param("~overlay_resolution", 0.05))
         self.publish_heatmap_marker = bool(rospy.get_param("~publish_heatmap_marker", True))
@@ -586,7 +590,8 @@ class AudioVisualGoalFusionNode:
         goal.point.y = float(y)
         goal.point.z = self.goal_z
         self.goal_pub.publish(goal)
-        self.goal_pose_pub.publish(self.make_goal_pose(frame_id, stamp, x, y))
+        if self.should_publish_goal_pose():
+            self.goal_pose_pub.publish(self.make_goal_pose(frame_id, stamp, x, y))
 
         marker_header = (marker_reference_msg or reference_msg).header
         marker = Marker()
@@ -628,6 +633,15 @@ class AudioVisualGoalFusionNode:
         }
         self.goal_json_pub.publish(String(data=json.dumps(payload, ensure_ascii=True)))
         self.set_fusion_mode(fusion_mode)
+
+    def should_publish_goal_pose(self):
+        if self.goal_pose_publish_period_sec <= 0.0:
+            return True
+        now = self.rospy.Time.now()
+        if (now - self._last_goal_pose_publish_time).to_sec() < self.goal_pose_publish_period_sec:
+            return False
+        self._last_goal_pose_publish_time = now
+        return True
 
     def make_goal_pose(self, frame_id, stamp, x, y):
         from geometry_msgs.msg import PoseStamped

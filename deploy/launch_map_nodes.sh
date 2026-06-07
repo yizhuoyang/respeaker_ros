@@ -95,7 +95,8 @@ start_node audio_visual_goal_fusion \
     _global_frame_id:=camera_init \
     _reference_map:=audio \
     _normalize_inputs:=false \
-    _goal_pose_topic:=/move_based_simple/goal_raw
+    _goal_pose_topic:=/move_based_simple/goal_raw \
+    _goal_pose_publish_period_sec:=5.0
 
 echo
 echo "[map] map nodes started. Logs: ${LOG_DIR}"
