@@ -96,6 +96,7 @@ start_node audio_visual_goal_fusion \
     _reference_map:=audio \
     _normalize_inputs:=true \
     _goal_pose_topic:=/move_based_simple/goal_raw \
+    _goal_pose_initial_delay_sec:=8.0 \
     _goal_pose_publish_period_sec:=5.0
 
 echo

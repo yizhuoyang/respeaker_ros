@@ -160,6 +160,7 @@ class AudioVisualGoalFusionNode:
         self.last_fused_max = 0.0
         self.last_fusion_mode = "none"
         self.last_reference_geometry = None
+        self.last_published_goal_pose = None
 
         self.audio_map_topic = rospy.get_param("~audio_map_topic", "/sslnet_audio_map/map")
         self.visual_map_topic = rospy.get_param("~visual_map_topic", "/yoloe_visual_map/map")
@@ -191,7 +192,11 @@ class AudioVisualGoalFusionNode:
         self.goal_pose_publish_period_sec = float(
             rospy.get_param("~goal_pose_publish_period_sec", 5.0)
         )
-        self._last_goal_pose_publish_wall_time = time.monotonic()
+        self.goal_pose_initial_delay_sec = float(
+            rospy.get_param("~goal_pose_initial_delay_sec", 8.0)
+        )
+        self._goal_pose_start_wall_time = time.monotonic()
+        self._last_goal_pose_publish_wall_time = None
         self.marker_height = float(rospy.get_param("~marker_height", 0.18))
         self.overlay_resolution = float(rospy.get_param("~overlay_resolution", 0.05))
         self.publish_heatmap_marker = bool(rospy.get_param("~publish_heatmap_marker", True))
@@ -592,7 +597,10 @@ class AudioVisualGoalFusionNode:
         goal.point.z = self.goal_z
         self.goal_pub.publish(goal)
         if self.should_publish_goal_pose():
-            self.goal_pose_pub.publish(self.make_goal_pose(frame_id, stamp, x, y))
+            goal_pose = self.make_goal_pose(frame_id, stamp, x, y)
+            self.goal_pose_pub.publish(goal_pose)
+            with self.lock:
+                self.last_published_goal_pose = goal_pose
 
         marker_header = (marker_reference_msg or reference_msg).header
         marker = Marker()
@@ -639,6 +647,11 @@ class AudioVisualGoalFusionNode:
         if self.goal_pose_publish_period_sec <= 0.0:
             return True
         now = time.monotonic()
+        if self._last_goal_pose_publish_wall_time is None:
+            if now - self._goal_pose_start_wall_time < self.goal_pose_initial_delay_sec:
+                return False
+            self._last_goal_pose_publish_wall_time = now
+            return True
         if now - self._last_goal_pose_publish_wall_time < self.goal_pose_publish_period_sec:
             return False
         self._last_goal_pose_publish_wall_time = now
@@ -662,6 +675,9 @@ class AudioVisualGoalFusionNode:
         from geometry_msgs.msg import Point
         from std_msgs.msg import ColorRGBA
         from visualization_msgs.msg import Marker, MarkerArray
+
+        with self.lock:
+            last_published_goal_pose = self.last_published_goal_pose
 
         markers = []
         if self.publish_heatmap_marker:
@@ -702,9 +718,9 @@ class AudioVisualGoalFusionNode:
                     heatmap.points.append(Point(float(x), float(y), self.heatmap_marker_height))
                     heatmap.colors.append(
                         ColorRGBA(
-                            r=0.15 + 0.25 * value,
-                            g=0.20 + 0.35 * value,
-                            b=0.95,
+                            r=min(1.0, 2.0 * value),
+                            g=min(1.0, 2.0 * (1.0 - value)),
+                            b=0.05,
                             a=0.15 + 0.70 * value,
                         )
                     )
@@ -742,6 +758,41 @@ class AudioVisualGoalFusionNode:
             goal_marker.pose.position.y,
         )
         markers.append(label)
+
+        if last_published_goal_pose is not None:
+            planner_goal = Marker()
+            planner_goal.header = heatmap_reference_msg.header
+            planner_goal.ns = "audio_visual_planner_goal"
+            planner_goal.id = 0
+            planner_goal.type = Marker.SPHERE
+            planner_goal.action = Marker.ADD
+            planner_goal.pose.position.x = last_published_goal_pose.pose.position.x
+            planner_goal.pose.position.y = last_published_goal_pose.pose.position.y
+            planner_goal.pose.position.z = self.marker_height
+            planner_goal.pose.orientation.w = 1.0
+            planner_goal.scale.x = planner_goal.scale.y = planner_goal.scale.z = 0.30
+            planner_goal.color = ColorRGBA(r=1.0, g=0.05, b=0.95, a=0.98)
+            markers.append(planner_goal)
+
+            planner_label = Marker()
+            planner_label.header = heatmap_reference_msg.header
+            planner_label.ns = "audio_visual_planner_goal"
+            planner_label.id = 1
+            planner_label.type = Marker.TEXT_VIEW_FACING
+            planner_label.action = Marker.ADD
+            planner_label.pose.position = Point(
+                float(last_published_goal_pose.pose.position.x),
+                float(last_published_goal_pose.pose.position.y),
+                self.marker_height + 0.35,
+            )
+            planner_label.pose.orientation.w = 1.0
+            planner_label.scale.z = 0.20
+            planner_label.color = ColorRGBA(r=1.0, g=0.05, b=0.95, a=1.0)
+            planner_label.text = "planner goal\n(%.2f, %.2f)" % (
+                last_published_goal_pose.pose.position.x,
+                last_published_goal_pose.pose.position.y,
+            )
+            markers.append(planner_label)
         return MarkerArray(markers=markers)
 
     def update_status(self, goal, audio_max, visual_max, fused_max):
