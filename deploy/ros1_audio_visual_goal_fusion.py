@@ -3,6 +3,7 @@
 
 import json
 import threading
+import time
 
 import numpy as np
 
@@ -190,7 +191,7 @@ class AudioVisualGoalFusionNode:
         self.goal_pose_publish_period_sec = float(
             rospy.get_param("~goal_pose_publish_period_sec", 5.0)
         )
-        self._last_goal_pose_publish_time = self.rospy.Time.now()
+        self._last_goal_pose_publish_wall_time = time.monotonic()
         self.marker_height = float(rospy.get_param("~marker_height", 0.18))
         self.overlay_resolution = float(rospy.get_param("~overlay_resolution", 0.05))
         self.publish_heatmap_marker = bool(rospy.get_param("~publish_heatmap_marker", True))
@@ -637,10 +638,10 @@ class AudioVisualGoalFusionNode:
     def should_publish_goal_pose(self):
         if self.goal_pose_publish_period_sec <= 0.0:
             return True
-        now = self.rospy.Time.now()
-        if (now - self._last_goal_pose_publish_time).to_sec() < self.goal_pose_publish_period_sec:
+        now = time.monotonic()
+        if now - self._last_goal_pose_publish_wall_time < self.goal_pose_publish_period_sec:
             return False
-        self._last_goal_pose_publish_time = now
+        self._last_goal_pose_publish_wall_time = now
         return True
 
     def make_goal_pose(self, frame_id, stamp, x, y):

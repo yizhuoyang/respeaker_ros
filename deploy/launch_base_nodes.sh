@@ -57,7 +57,7 @@ start_node sslnet_audio_engine \
     _engine:=weights/ssl_doa_distance_synced/last_model.engine \
     _device:=cuda:0 \
     _window_seconds:=0.5 \
-    _hop_seconds:=0.25 \
+    _hop_seconds:=0.1 \
     audio_topic:=/mic2/audio_raw
 
 start_node livox_to_pointcloud2 \

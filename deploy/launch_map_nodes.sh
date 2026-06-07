@@ -91,10 +91,10 @@ start_node audio_visual_goal_fusion \
     _audio_map_topic:=/sslnet_audio_map/map \
     _visual_map_topic:=/yoloe_visual_map/map \
     _audio_weight:=1.0 \
-    _visual_weight:=1.0 \
+    _visual_weight:=1.1 \
     _global_frame_id:=camera_init \
     _reference_map:=audio \
-    _normalize_inputs:=false \
+    _normalize_inputs:=true \
     _goal_pose_topic:=/move_based_simple/goal_raw \
     _goal_pose_publish_period_sec:=5.0
 
