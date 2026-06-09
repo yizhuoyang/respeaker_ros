@@ -308,6 +308,10 @@ class YOLOEVisualMapNode:
         self.max_rgb_depth_age_sec = float(
             rospy.get_param("~max_rgb_depth_age_sec", 0.25)
         )
+        self.use_latest_depth_on_process = bool(
+            rospy.get_param("~use_latest_depth_on_process", True)
+        )
+        self.allow_stale_depth = bool(rospy.get_param("~allow_stale_depth", True))
 
         self.geometry = None
         self.geometry_from_audio_map = False
@@ -396,9 +400,12 @@ class YOLOEVisualMapNode:
         )
         rospy.loginfo(
             "YOLOE inference processes only the newest RGB-D frame: pairing_mode=%s "
-            "max_rgb_depth_age_sec=%.3f projection_pose_source=%s",
+            "max_rgb_depth_age_sec=%.3f allow_stale_depth=%s "
+            "use_latest_depth_on_process=%s projection_pose_source=%s",
             self.image_pairing_mode,
             self.max_rgb_depth_age_sec,
+            self.allow_stale_depth,
+            self.use_latest_depth_on_process,
             self.projection_pose_source,
         )
         rospy.loginfo(
@@ -631,31 +638,47 @@ class YOLOEVisualMapNode:
         if depth_msg is None:
             self.last_status = "waiting_for_depth_image"
             return
+        if not self.accept_rgb_depth_pair(rgb_msg, depth_msg, "latest_depth_at_rgb"):
+            return
+        self.rgb_depth_callback(rgb_msg, depth_msg)
+
+    def compute_rgb_depth_dt_sec(self, rgb_msg, depth_msg):
         rgb_stamp = rgb_msg.header.stamp.to_sec()
         depth_stamp = depth_msg.header.stamp.to_sec()
-        dt_sec = abs(rgb_stamp - depth_stamp) if rgb_stamp > 0.0 and depth_stamp > 0.0 else 0.0
+        if rgb_stamp > 0.0 and depth_stamp > 0.0:
+            return abs(rgb_stamp - depth_stamp)
+        return 0.0
+
+    def accept_rgb_depth_pair(self, rgb_msg, depth_msg, context):
+        dt_sec = self.compute_rgb_depth_dt_sec(rgb_msg, depth_msg)
         with self.lock:
             self.last_rgb_depth_dt_sec = dt_sec
         if self.max_rgb_depth_age_sec >= 0.0 and dt_sec > self.max_rgb_depth_age_sec:
-            self.last_status = "waiting_for_recent_depth_image"
+            if not self.allow_stale_depth:
+                self.last_status = "waiting_for_recent_depth_image"
+                self.rospy.logwarn_throttle(
+                    5.0,
+                    "%s depth image is %.3fs away from RGB stamp; skipping frame. "
+                    "Increase ~max_rgb_depth_age_sec or set ~allow_stale_depth:=true.",
+                    context,
+                    dt_sec,
+                )
+                return False
             self.rospy.logwarn_throttle(
                 5.0,
-                "Latest depth image is %.3fs away from RGB stamp; increase "
-                "~max_rgb_depth_age_sec or use time-aligned camera topics.",
+                "%s depth image is %.3fs away from RGB stamp; using it anyway because "
+                "~allow_stale_depth is true.",
+                context,
                 dt_sec,
             )
-            return
-        self.rgb_depth_callback(rgb_msg, depth_msg)
+        return True
 
     def rgb_depth_callback(self, rgb_msg, depth_msg):
         if self.stop_event.is_set() or self.rospy.is_shutdown():
             return
         with self.lock:
             self.frames_received += 1
-            rgb_stamp = rgb_msg.header.stamp.to_sec()
-            depth_stamp = depth_msg.header.stamp.to_sec()
-            if rgb_stamp > 0.0 and depth_stamp > 0.0:
-                self.last_rgb_depth_dt_sec = abs(rgb_stamp - depth_stamp)
+            self.last_rgb_depth_dt_sec = self.compute_rgb_depth_dt_sec(rgb_msg, depth_msg)
         task = (rgb_msg, depth_msg)
         try:
             self.frame_queue.put_nowait(task)
@@ -694,12 +717,17 @@ class YOLOEVisualMapNode:
     def process_rgb_depth(self, rgb_msg, depth_msg):
         with self.lock:
             camera_info = self.latest_camera_info
+            latest_depth_msg = self.latest_depth_msg
         if camera_info is None:
             self.last_status = "waiting_for_camera_info"
             return
         if not self.initialize_fallback_geometry():
             return
         if not self.load_model():
+            return
+        if self.use_latest_depth_on_process and latest_depth_msg is not None:
+            depth_msg = latest_depth_msg
+        if not self.accept_rgb_depth_pair(rgb_msg, depth_msg, "latest_depth_at_process"):
             return
         try:
             rgb = ros_rgb_to_bgr(rgb_msg)

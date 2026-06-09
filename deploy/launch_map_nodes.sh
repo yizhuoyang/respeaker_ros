@@ -79,6 +79,10 @@ start_node yoloe_visual_map \
     _projection_pose_source:=odom \
     _classes:=guitar \
     _conf:=0.2 \
+    _image_pairing_mode:=latest \
+    _use_latest_depth_on_process:=true \
+    _allow_stale_depth:=true \
+    _max_rgb_depth_age_sec:=0.25 \
     _map_update_mode:=tracks \
     _track_merge_distance_m:=0.60 \
     _track_smoothing_alpha:=0.25 \
