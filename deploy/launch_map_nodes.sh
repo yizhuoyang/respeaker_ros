@@ -77,7 +77,7 @@ start_node yoloe_visual_map \
     _use_audio_map_geometry:=true \
     _audio_map_topic:=/sslnet_audio_map/map \
     _projection_pose_source:=odom \
-    _classes:=guitar \
+    _classes:=keyboard \
     _conf:=0.2 \
     _image_pairing_mode:=latest \
     _use_latest_depth_on_process:=true \
